@@ -1,0 +1,4 @@
+# Backend build artifacts
+/bin
+/data
+*.db
