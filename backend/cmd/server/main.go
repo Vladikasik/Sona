@@ -51,6 +51,7 @@ func main() {
 	http.HandleFunc("/get_parent", s.GetParent)          // triggers Grid account creation
 	http.HandleFunc("/grid/otp_verify", s.VerifyGridOTP) // OTP verification
 	http.HandleFunc("/list_kids", s.KidsList)            // list kid profiles for a parent
+	http.HandleFunc("/get_child", s.GetChild)            // create or fetch child record
 
 	bindAddr := os.Getenv("BIND_ADDR")
 	if bindAddr == "" {

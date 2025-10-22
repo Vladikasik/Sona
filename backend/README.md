@@ -42,20 +42,50 @@ BIND_ADDR=127.0.0.1:33777 ./server
 
 - GET `/get_parent?name=&email=`
   - Initiates Grid "Create Account" (type=email) with provided email.
-  - If account already exists, returns Grid conflict response from Grid unchanged.
+  - If account already exists, the Grid conflict response is returned unchanged.
+  - Query params:
+    - `name` (string, required)
+    - `email` (email, required)
+  - Response: direct passthrough of Grid response
+    - Success: 201/202 with pending verification payload
+    - Conflict: 409 with
+      {
+        "message": "Resource conflict",
+        "details": [{"field":"account","code":"RESOURCE_EXISTS","message":"Account already exists"}],
+        "timestamp": "..."
+      }
+  - Example:
 ```bash
 curl 'http://127.0.0.1:33777/get_parent?name=Alice&email=alice@example.com'
 ```
 
 - POST `/grid/otp_verify`
-  - Backend proxies the request body to Grid OTP verification and adds required headers itself
-    - Clients DO NOT need to send Grid auth or env headers
-    - Backend sends: `Authorization: Bearer $GRID_API_KEY`, `x-grid-environment: $GRID_ENV`
+  - Completes account creation by verifying OTP and supplying HPKE public key
+  - Request body (JSON):
+    - `email` (string, required)
+    - `otp_code` (string length 6, required)
+  - Behavior:
+    - Backend injects Grid headers: `Authorization` and `x-grid-environment` and adds `x-idempotency-key`
+    - Backend will include `kms_provider_config.encryption_public_key` (base64 of stored DER P-256 public key) to Grid
+  - Response: direct passthrough of Grid response (200 on success)
 ```bash
 curl -X POST 'http://127.0.0.1:33777/grid/otp_verify' \
      -H 'Content-Type: application/json' \
      -d '{"email":"alice@example.com","otp_code":"123456"}'
 ```
+
+- GET `/list_kids?parent_id=`
+  - Lists kid profiles for a parent (local DB helper for UI)
+  - Query params:
+    - `parent_id` (integer, required)
+  - Response: `{ "kids": [{"id":number, "name":string, "balance":number}, ...] }`
+  - Example:
+```bash
+curl 'http://127.0.0.1:33777/list_kids?parent_id=1'
+```
+
+Notes:
+- `GET /get_child` is enabled.
 
 References:
 - Create Account: [grid.squads.xyz API](https://grid.squads.xyz/grid/v1/api-reference/endpoint/account-management/post)
