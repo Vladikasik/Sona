@@ -28,13 +28,12 @@ func main() {
 
 	s := &handlers.Server{DB: database}
 
-	http.HandleFunc("/register_parent", s.RegisterParent)
-	http.HandleFunc("/register_kid", s.RegisterKid)
-	http.HandleFunc("/kids_list", s.KidsList)
-	http.HandleFunc("/parent_topup", s.ParentTopUp)
-	http.HandleFunc("/send_kid_money", s.SendKidMoney)
+	// simplified endpoints
 	http.HandleFunc("/get_parent", s.GetParent)
 	http.HandleFunc("/get_child", s.GetChild)
+	http.HandleFunc("/list_kids", s.KidsList)
+	http.HandleFunc("/parent_topup", s.ParentTopUp)
+	http.HandleFunc("/send_kid_money", s.SendKidMoney)
 
 	bindAddr := os.Getenv("BIND_ADDR")
 	if bindAddr == "" {

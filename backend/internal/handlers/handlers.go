@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"strconv"
@@ -157,25 +158,17 @@ func (s *Server) GetParent(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, apiError{"method not allowed"})
 		return
 	}
-	if id, ok := parseInt64Query(r, "id"); ok {
-		p, err := s.DB.GetParentByID(id)
-		if err != nil {
-			writeJSON(w, http.StatusNotFound, apiError{err.Error()})
-			return
-		}
-		writeJSON(w, http.StatusOK, p)
+	name, ok := parseStringQuery(r, "name")
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, apiError{"missing name"})
 		return
 	}
-	if name, ok := parseStringQuery(r, "name"); ok {
-		p, err := s.DB.GetParentByName(name)
-		if err != nil {
-			writeJSON(w, http.StatusNotFound, apiError{err.Error()})
-			return
-		}
-		writeJSON(w, http.StatusOK, p)
+	p, err := s.DB.GetOrCreateParentByName(name)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiError{err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusBadRequest, apiError{"either id or name required"})
+	writeJSON(w, http.StatusOK, p)
 }
 
 func (s *Server) GetChild(w http.ResponseWriter, r *http.Request) {
@@ -183,23 +176,41 @@ func (s *Server) GetChild(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, apiError{"method not allowed"})
 		return
 	}
-	if id, ok := parseInt64Query(r, "id"); ok {
-		k, err := s.DB.GetKidByID(id)
+	name, ok := parseStringQuery(r, "name")
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, apiError{"missing name"})
+		return
+	}
+	if parentID, hasParent := parseInt64Query(r, "parent_id"); hasParent {
+		if _, err := s.DB.GetParentByID(parentID); err != nil {
+			if err == sql.ErrNoRows {
+				writeJSON(w, http.StatusBadRequest, apiError{"parent not found"})
+				return
+			}
+			writeJSON(w, http.StatusInternalServerError, apiError{err.Error()})
+			return
+		}
+		kidID, err := s.DB.CreateKid(name, parentID)
 		if err != nil {
-			writeJSON(w, http.StatusNotFound, apiError{err.Error()})
+			writeJSON(w, http.StatusInternalServerError, apiError{err.Error()})
+			return
+		}
+		k, err := s.DB.GetKidByID(kidID)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, apiError{err.Error()})
 			return
 		}
 		writeJSON(w, http.StatusOK, k)
 		return
 	}
-	if name, ok := parseStringQuery(r, "name"); ok {
-		k, err := s.DB.GetKidByName(name)
-		if err != nil {
-			writeJSON(w, http.StatusNotFound, apiError{err.Error()})
+	k, err := s.DB.GetKidByName(name)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			writeJSON(w, http.StatusOK, nil)
 			return
 		}
-		writeJSON(w, http.StatusOK, k)
+		writeJSON(w, http.StatusInternalServerError, apiError{err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusBadRequest, apiError{"either id or name required"})
+	writeJSON(w, http.StatusOK, k)
 }

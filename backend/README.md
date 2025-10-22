@@ -20,19 +20,23 @@ BIND_ADDR=127.0.0.1:33777 ./server
 
 ### Endpoints
 
-- POST `/register_parent?name=`
+- GET `/get_parent?name=`
+  - Returns the parent by name if exists, otherwise creates and returns it.
 ```bash
-curl -X POST 'http://127.0.0.1:33777/register_parent?name=Alice'
+curl 'http://127.0.0.1:33777/get_parent?name=Alice'
 ```
 
-- POST `/register_kid?name=&parent_id=`
+- GET `/get_child?name=&parent_id=`
+  - If `parent_id` provided: creates kid with that name for the parent (if parent exists) and returns the kid.
+  - If `parent_id` omitted: returns the kid by name or `null` if none; does not create.
 ```bash
-curl -X POST 'http://127.0.0.1:33777/register_kid?name=Bob&parent_id=1'
+curl 'http://127.0.0.1:33777/get_child?name=Bob&parent_id=1'
+curl 'http://127.0.0.1:33777/get_child?name=Bob'
 ```
 
-- GET `/kids_list?parent_id=`
+- GET `/list_kids?parent_id=`
 ```bash
-curl 'http://127.0.0.1:33777/kids_list?parent_id=1'
+curl 'http://127.0.0.1:33777/list_kids?parent_id=1'
 ```
 
 - POST `/parent_topup?parent_id=&amount=`
@@ -41,17 +45,6 @@ curl -X POST 'http://127.0.0.1:33777/parent_topup?parent_id=1&amount=500'
 ```
 
 - POST `/send_kid_money?parent_id=&kid_id=&amount=`
-- GET `/get_parent?id=` or `/get_parent?name=` (one required)
-```bash
-curl 'http://127.0.0.1:33777/get_parent?id=1'
-curl 'http://127.0.0.1:33777/get_parent?name=Alice'
-```
-
-- GET `/get_child?id=` or `/get_child?name=` (one required)
-```bash
-curl 'http://127.0.0.1:33777/get_child?id=1'
-curl 'http://127.0.0.1:33777/get_child?name=Bob'
-```
 ```bash
 curl -X POST 'http://127.0.0.1:33777/send_kid_money?parent_id=1&kid_id=1&amount=200'
 ```

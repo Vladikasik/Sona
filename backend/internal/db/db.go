@@ -183,6 +183,21 @@ func (d *Database) GetKidByName(name string) (*Kid, error) {
 	return k, nil
 }
 
+func (d *Database) GetOrCreateParentByName(name string) (*Parent, error) {
+	p, err := d.GetParentByName(name)
+	if err == nil {
+		return p, nil
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		id, _, errCreate := d.CreateParent(name)
+		if errCreate != nil {
+			return nil, errCreate
+		}
+		return d.GetParentByID(id)
+	}
+	return nil, err
+}
+
 func (d *Database) TopUpParent(parentID int64, amount int64) (int64, error) {
 	_, err := d.DB.Exec(`UPDATE parents SET balance = balance + ? WHERE id = ?`, amount, parentID)
 	if err != nil {
