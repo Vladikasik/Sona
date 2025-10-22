@@ -152,4 +152,54 @@ func (s *Server) SendKidMoney(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"parent_balance": parentBal, "kid_balance": kidBal})
 }
 
+func (s *Server) GetParent(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, apiError{"method not allowed"})
+		return
+	}
+	if id, ok := parseInt64Query(r, "id"); ok {
+		p, err := s.DB.GetParentByID(id)
+		if err != nil {
+			writeJSON(w, http.StatusNotFound, apiError{err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, p)
+		return
+	}
+	if name, ok := parseStringQuery(r, "name"); ok {
+		p, err := s.DB.GetParentByName(name)
+		if err != nil {
+			writeJSON(w, http.StatusNotFound, apiError{err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, p)
+		return
+	}
+	writeJSON(w, http.StatusBadRequest, apiError{"either id or name required"})
+}
 
+func (s *Server) GetChild(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, apiError{"method not allowed"})
+		return
+	}
+	if id, ok := parseInt64Query(r, "id"); ok {
+		k, err := s.DB.GetKidByID(id)
+		if err != nil {
+			writeJSON(w, http.StatusNotFound, apiError{err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, k)
+		return
+	}
+	if name, ok := parseStringQuery(r, "name"); ok {
+		k, err := s.DB.GetKidByName(name)
+		if err != nil {
+			writeJSON(w, http.StatusNotFound, apiError{err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, k)
+		return
+	}
+	writeJSON(w, http.StatusBadRequest, apiError{"either id or name required"})
+}

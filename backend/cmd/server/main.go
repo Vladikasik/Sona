@@ -33,10 +33,12 @@ func main() {
 	http.HandleFunc("/kids_list", s.KidsList)
 	http.HandleFunc("/parent_topup", s.ParentTopUp)
 	http.HandleFunc("/send_kid_money", s.SendKidMoney)
+	http.HandleFunc("/get_parent", s.GetParent)
+	http.HandleFunc("/get_child", s.GetChild)
 
 	bindAddr := os.Getenv("BIND_ADDR")
 	if bindAddr == "" {
-		bindAddr = "95.163.223.236:33777"
+		bindAddr = "0.0.0.0:33777"
 	}
 	ln, err := net.Listen("tcp", bindAddr)
 	if err != nil {

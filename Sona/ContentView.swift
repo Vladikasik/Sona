@@ -22,19 +22,24 @@ struct ContentView: View {
     @AppStorage("userRole") private var storedRole: String?
     @AppStorage("parentName") private var parentName: String = ""
     @AppStorage("parentId") private var parentId: String = ""
+    @AppStorage("parentServerId") private var parentServerId: Int = 0
+    @AppStorage("parentUID") private var parentUID: String = ""
     @AppStorage("childName") private var childName: String = ""
     @AppStorage("childParentId") private var childParentId: String = ""
+    @AppStorage("childParentIdInt") private var childParentIdInt: Int = 0
+    @AppStorage("kidId") private var kidId: Int = 0
 
     @State private var flow: FlowState = .selection
+    @State private var alertMessage: String?
 
     var body: some View {
         Group {
             if let roleString = storedRole, let role = UserRole(rawValue: roleString) {
                 switch role {
                 case .parent:
-                    ParentMainView(name: parentName, id: parentId, onSignOut: signOut)
+                    ParentMainView(name: parentName, parentId: parentServerId, parentUID: parentUID, onSignOut: signOut, onError: { alertMessage = $0 })
                 case .child:
-                    ChildMainView(onSignOut: signOut)
+                    ChildMainView(onSignOut: signOut, onError: { alertMessage = $0 })
                 }
             } else {
                 switch flow {
@@ -45,16 +50,39 @@ struct ContentView: View {
                     )
                 case .parentOnboarding:
                     ParentOnboardingView(onComplete: { name in
-                        let generatedId = Self.generateParentId()
-                        parentName = name
-                        parentId = generatedId
-                        storedRole = UserRole.parent.rawValue
+                        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard !trimmed.isEmpty else { return }
+                        Task {
+                            do {
+                                let res = try await APIService.registerParent(name: trimmed)
+                                parentName = trimmed
+                                parentServerId = Int(res.parentId)
+                                parentUID = res.parentUID
+                                storedRole = UserRole.parent.rawValue
+                            } catch {
+                                alertMessage = error.localizedDescription
+                            }
+                        }
                     })
                 case .childOnboarding:
                     ChildOnboardingView(onComplete: { name, parent in
-                        childName = name
-                        childParentId = parent
-                        storedRole = UserRole.child.rawValue
+                        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let trimmedParent = parent.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard let parentInt = Int(trimmedParent), parentInt > 0 else {
+                            alertMessage = "Invalid parent ID"
+                            return
+                        }
+                        Task {
+                            do {
+                                let res = try await APIService.registerKid(name: trimmedName, parentId: Int64(parentInt))
+                                childName = trimmedName
+                                childParentIdInt = parentInt
+                                kidId = Int(res.kidId)
+                                storedRole = UserRole.child.rawValue
+                            } catch {
+                                alertMessage = error.localizedDescription
+                            }
+                        }
                     })
                 }
             }
@@ -63,6 +91,9 @@ struct ContentView: View {
             if storedRole == nil {
                 flow = .selection
             }
+        }
+        .alert(item: $alertMessage.asIdentifiable) { msg in
+            Alert(title: Text("Error"), message: Text(msg.value), dismissButton: .default(Text("OK")))
         }
     }
 
@@ -75,8 +106,12 @@ struct ContentView: View {
         storedRole = nil
         parentName = ""
         parentId = ""
+        parentServerId = 0
+        parentUID = ""
         childName = ""
         childParentId = ""
+        childParentIdInt = 0
+        kidId = 0
         flow = .selection
     }
 }
@@ -176,17 +211,13 @@ private struct ChildOnboardingView: View {
 
 private struct ParentMainView: View {
     let name: String
-    let id: String
+    let parentId: Int
+    let parentUID: String
     let onSignOut: () -> Void
+    let onError: (String) -> Void
 
-    private var balanceText: String {
-        let value = Self.makeDeterministicAmount(from: id)
-        return String(format: "$%.2f", value)
-    }
-
-    private var kids: [String] {
-        Self.makeDeterministicKids(from: id)
-    }
+    @State private var parentBalanceCents: Int64 = 0
+    @State private var kids: [APIService.Kid] = []
 
     var body: some View {
         List {
@@ -199,18 +230,32 @@ private struct ParentMainView: View {
                 HStack {
                     Text("ID")
                     Spacer()
-                    Text(id).font(.system(.body, design: .monospaced)).foregroundColor(.secondary)
+                    Text(String(parentId)).font(.system(.body, design: .monospaced)).foregroundColor(.secondary)
+                }
+                HStack {
+                    Text("UID")
+                    Spacer()
+                    Text(parentUID).font(.system(.body, design: .monospaced)).foregroundColor(.secondary)
                 }
             }
             Section(header: Text("Balance")) {
-                Text(balanceText).font(.title2)
+                Text(formatCents(parentBalanceCents)).font(.title2)
+                Button("Top up $100") { Task { await topUp(amountCents: 10_000) } }
             }
             Section(header: Text("Kids")) {
                 if kids.isEmpty {
                     Text("No kids yet")
                 } else {
-                    ForEach(kids, id: \.self) { kid in
-                        Text(kid)
+                    ForEach(kids, id: \.id) { kid in
+                        HStack {
+                            VStack(alignment: .leading) {
+                                Text(kid.name)
+                                Text(formatCents(kid.balance)).font(.footnote).foregroundColor(.secondary)
+                            }
+                            Spacer()
+                            Button("Send $50") { Task { await send(to: kid, amountCents: 5_000) } }
+                                .buttonStyle(.borderedProminent)
+                        }
                     }
                 }
             }
@@ -221,44 +266,56 @@ private struct ParentMainView: View {
         }
         .listStyle(.insetGrouped)
         .navigationTitle("Parent")
+        .refreshable { await reload() }
+        .task { await reload() }
     }
 
-    private static func makeDeterministicAmount(from seed: String) -> Double {
-        var accumulator: UInt64 = 0
-        for u in seed.utf8 { accumulator = accumulator &* 1099511628211 &+ UInt64(u) }
-        let base = Double(accumulator % 90_000) / 100.0
-        return base + 10.0
-    }
-
-    private static func makeDeterministicKids(from seed: String) -> [String] {
-        let pool = ["Alex", "Sam", "Taylor", "Jordan", "Casey", "Riley", "Morgan", "Quinn", "Avery", "Jamie"]
-        var result: [String] = []
-        var acc: UInt64 = 1469598103934665603
-        for u in seed.utf8 { acc = acc &* 1099511628211 &+ UInt64(u) }
-        let count = Int((acc % 3) + 1)
-        var used = Set<Int>()
-        var temp = acc
-        while result.count < count {
-            temp = temp &* 2862933555777941757 &+ 3037000493
-            let idx = Int(temp % UInt64(pool.count))
-            if !used.contains(idx) {
-                used.insert(idx)
-                result.append(pool[idx])
-            }
+    private func reload() async {
+        guard parentId > 0 else { return }
+        do {
+            async let parent = APIService.getParent(id: Int64(parentId), name: nil)
+            async let kidsRes = APIService.kidsList(parentId: Int64(parentId))
+            let (p, kl) = try await (parent, kidsRes)
+            parentBalanceCents = p.balance
+            kids = kl.kids
+        } catch {
+            onError(error.localizedDescription)
         }
-        return result
+    }
+
+    private func topUp(amountCents: Int64) async {
+        guard parentId > 0 else { return }
+        do {
+            let res = try await APIService.parentTopUp(parentId: Int64(parentId), amount: amountCents)
+            parentBalanceCents = res.parentBalance
+            await reload()
+        } catch {
+            onError(error.localizedDescription)
+        }
+    }
+
+    private func send(to kid: APIService.Kid, amountCents: Int64) async {
+        guard parentId > 0 else { return }
+        do {
+            let res = try await APIService.sendKidMoney(parentId: Int64(parentId), kidId: kid.id, amount: amountCents)
+            parentBalanceCents = res.parentBalance
+            if let idx = kids.firstIndex(where: { $0.id == kid.id }) {
+                kids[idx].balance = res.kidBalance
+            }
+        } catch {
+            onError(error.localizedDescription)
+        }
     }
 }
 
 private struct ChildMainView: View {
     @AppStorage("childName") private var childName: String = ""
     @AppStorage("childParentId") private var parentId: String = ""
+    @AppStorage("kidId") private var kidId: Int = 0
     let onSignOut: () -> Void
+    let onError: (String) -> Void
 
-    private var balanceText: String {
-        let value = Self.makeDeterministicAmount(from: childName)
-        return String(format: "$%.2f", value)
-    }
+    @State private var childBalanceCents: Int64 = 0
 
     var body: some View {
         List {
@@ -275,7 +332,7 @@ private struct ChildMainView: View {
                 }
             }
             Section(header: Text("Balance")) {
-                Text(balanceText).font(.title2)
+                Text(formatCents(childBalanceCents)).font(.title2)
             }
             Section {
                 Button("Sign out", role: .destructive, action: onSignOut)
@@ -284,16 +341,117 @@ private struct ChildMainView: View {
         }
         .listStyle(.insetGrouped)
         .navigationTitle("Child")
+        .refreshable { await reload() }
+        .task { await reload() }
     }
 
-    private static func makeDeterministicAmount(from seed: String) -> Double {
-        var accumulator: UInt64 = 0
-        for u in seed.utf8 { accumulator = accumulator &* 1099511628211 &+ UInt64(u) }
-        let base = Double(accumulator % 40_000) / 100.0
-        return base + 5.0
+    private func reload() async {
+        do {
+            if kidId > 0 {
+                let kid = try await APIService.getChild(id: Int64(kidId), name: nil)
+                childBalanceCents = kid.balance
+            } else if !childName.isEmpty {
+                let kid = try await APIService.getChild(id: nil, name: childName)
+                childBalanceCents = kid.balance
+            }
+        } catch {
+            onError(error.localizedDescription)
+        }
     }
 }
 
 #Preview {
     ContentView()
+}
+
+// MARK: - API Layer
+
+private enum APIService {
+    static let baseURL = URL(string: "http://95.163.223.236:33777")!
+
+    struct APIErrorResponse: Decodable, Error { let error: String }
+
+    struct RegisterParentResponse: Decodable { let parentId: Int64; let parentUID: String }
+    struct RegisterKidResponse: Decodable { let kidId: Int64 }
+    struct ParentBalanceResponse: Decodable { let parentBalance: Int64 }
+    struct SendKidMoneyResponse: Decodable { let parentBalance: Int64; let kidBalance: Int64 }
+
+    struct Parent: Decodable { let id: Int64; let uid: String; let name: String; let balance: Int64 }
+    struct Kid: Decodable, Identifiable { let id: Int64; let name: String; var balance: Int64 }
+    struct KidsListResponse: Decodable { var kids: [Kid] }
+
+    static func registerParent(name: String) async throws -> RegisterParentResponse {
+        try await request(path: "/register_parent", method: "POST", query: ["name": name])
+    }
+
+    static func registerKid(name: String, parentId: Int64) async throws -> RegisterKidResponse {
+        try await request(path: "/register_kid", method: "POST", query: ["name": name, "parent_id": String(parentId)])
+    }
+
+    static func kidsList(parentId: Int64) async throws -> KidsListResponse {
+        try await request(path: "/kids_list", method: "GET", query: ["parent_id": String(parentId)])
+    }
+
+    static func parentTopUp(parentId: Int64, amount: Int64) async throws -> ParentBalanceResponse {
+        try await request(path: "/parent_topup", method: "POST", query: ["parent_id": String(parentId), "amount": String(amount)])
+    }
+
+    static func sendKidMoney(parentId: Int64, kidId: Int64, amount: Int64) async throws -> SendKidMoneyResponse {
+        try await request(path: "/send_kid_money", method: "POST", query: ["parent_id": String(parentId), "kid_id": String(kidId), "amount": String(amount)])
+    }
+
+    static func getParent(id: Int64?, name: String?) async throws -> Parent {
+        var q: [String: String] = [:]
+        if let id { q["id"] = String(id) }
+        if let name { q["name"] = name }
+        return try await request(path: "/get_parent", method: "GET", query: q)
+    }
+
+    static func getChild(id: Int64?, name: String?) async throws -> Kid {
+        var q: [String: String] = [:]
+        if let id { q["id"] = String(id) }
+        if let name { q["name"] = name }
+        return try await request(path: "/get_child", method: "GET", query: q)
+    }
+
+    private static func request<T: Decodable>(path: String, method: String, query: [String: String]) async throws -> T {
+        var comps = URLComponents(url: baseURL.appendingPathComponent(path), resolvingAgainstBaseURL: false)!
+        if !query.isEmpty { comps.queryItems = query.map { URLQueryItem(name: $0.key, value: $0.value) } }
+        guard let url = comps.url else { throw URLError(.badURL) }
+        var req = URLRequest(url: url)
+        req.httpMethod = method
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        guard let http = resp as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        if http.statusCode >= 200 && http.statusCode < 300 {
+            return try decoder.decode(T.self, from: data)
+        } else {
+            if let apiErr = try? decoder.decode(APIErrorResponse.self, from: data) {
+                throw apiErr
+            }
+            throw URLError(.badServerResponse)
+        }
+    }
+}
+
+// MARK: - Utils
+
+private func formatCents(_ cents: Int64) -> String {
+    let sign = cents < 0 ? "-" : ""
+    let absCents = Int64(abs(Int(cents)))
+    let dollars = absCents / 100
+    let remainder = absCents % 100
+    return "\(sign)$\(dollars).\(String(format: "%02d", remainder))"
+}
+
+private struct IdentifiableString: Identifiable { let id = UUID(); let value: String }
+private extension Optional where Wrapped == String {
+    var asIdentifiable: IdentifiableString? {
+        switch self {
+        case .none: return nil
+        case .some(let s): return IdentifiableString(value: s)
+        }
+    }
 }

@@ -21,6 +21,13 @@ type Kid struct {
 	Balance int64
 }
 
+type Parent struct {
+	ID      int64
+	UID     string
+	Name    string
+	Balance int64
+}
+
 func Open(path string) (*Database, error) {
 	dsn := fmt.Sprintf("file:%s?_pragma=busy_timeout(10000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)&cache=shared", path)
 	db, err := sql.Open("sqlite", dsn)
@@ -140,6 +147,42 @@ func (d *Database) GetKidBalance(kidID int64) (int64, error) {
 	return bal, nil
 }
 
+func (d *Database) GetParentByID(id int64) (*Parent, error) {
+	p := &Parent{}
+	err := d.DB.QueryRow(`SELECT id, uid, name, balance FROM parents WHERE id = ?`, id).Scan(&p.ID, &p.UID, &p.Name, &p.Balance)
+	if err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
+func (d *Database) GetParentByName(name string) (*Parent, error) {
+	p := &Parent{}
+	err := d.DB.QueryRow(`SELECT id, uid, name, balance FROM parents WHERE name = ?`, name).Scan(&p.ID, &p.UID, &p.Name, &p.Balance)
+	if err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
+func (d *Database) GetKidByID(id int64) (*Kid, error) {
+	k := &Kid{}
+	err := d.DB.QueryRow(`SELECT id, name, balance FROM kids WHERE id = ?`, id).Scan(&k.ID, &k.Name, &k.Balance)
+	if err != nil {
+		return nil, err
+	}
+	return k, nil
+}
+
+func (d *Database) GetKidByName(name string) (*Kid, error) {
+	k := &Kid{}
+	err := d.DB.QueryRow(`SELECT id, name, balance FROM kids WHERE name = ?`, name).Scan(&k.ID, &k.Name, &k.Balance)
+	if err != nil {
+		return nil, err
+	}
+	return k, nil
+}
+
 func (d *Database) TopUpParent(parentID int64, amount int64) (int64, error) {
 	_, err := d.DB.Exec(`UPDATE parents SET balance = balance + ? WHERE id = ?`, amount, parentID)
 	if err != nil {
@@ -196,5 +239,3 @@ func (d *Database) SendKidMoney(parentID, kidID, amount int64) (int64, int64, er
 	}
 	return parentBal, kidBal, nil
 }
-
-
