@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 
@@ -118,8 +119,10 @@ func (s *Server) KidsList(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, apiError{"missing parent_id"})
 		return
 	}
+	log.Printf("GET /list_kids parent_id=%d", parentID)
 	kids, err := s.DB.ListKids(parentID)
 	if err != nil {
+		log.Printf("list kids error: %v", err)
 		writeJSON(w, http.StatusInternalServerError, apiError{err.Error()})
 		return
 	}
@@ -192,29 +195,36 @@ func (s *Server) GetParent(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, apiError{"missing email"})
 		return
 	}
+	log.Printf("GET /get_parent name=%q email=%q", name, email)
 	// Ensure a parent record exists and keys are generated
 	p, err := s.DB.GetOrCreateParentByEmail(name, email)
 	if err != nil {
+		log.Printf("get/create parent error: %v", err)
 		writeJSON(w, http.StatusInternalServerError, apiError{err.Error()})
 		return
 	}
 	if len(p.HPKEPubDER) == 0 || len(p.HPKEPrivDER) == 0 {
+		log.Printf("generating HPKE P-256 keys for parent_id=%d", p.ID)
 		priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 		if err != nil {
+			log.Printf("key generation failed: %v", err)
 			writeJSON(w, http.StatusInternalServerError, apiError{"key generation failed"})
 			return
 		}
 		privDER, err := x509.MarshalECPrivateKey(priv)
 		if err != nil {
+			log.Printf("private key DER marshal failed: %v", err)
 			writeJSON(w, http.StatusInternalServerError, apiError{"private key DER marshal failed"})
 			return
 		}
 		pubDER, err := x509.MarshalPKIXPublicKey(&priv.PublicKey)
 		if err != nil {
+			log.Printf("public key DER marshal failed: %v", err)
 			writeJSON(w, http.StatusInternalServerError, apiError{"public key DER marshal failed"})
 			return
 		}
 		if err := s.DB.SetParentHPKEKeys(p.ID, privDER, pubDER); err != nil {
+			log.Printf("db store keys failed: %v", err)
 			writeJSON(w, http.StatusInternalServerError, apiError{err.Error()})
 			return
 		}
@@ -223,6 +233,7 @@ func (s *Server) GetParent(w http.ResponseWriter, r *http.Request) {
 
 	// Call Grid Create Account (email type)
 	if s.GridAccountsURL == "" || s.GridAPIKey == "" {
+		log.Printf("grid not configured: accounts_url=%q api_key_set=%t", s.GridAccountsURL, s.GridAPIKey != "")
 		writeJSON(w, http.StatusInternalServerError, apiError{"grid not configured"})
 		return
 	}
@@ -232,8 +243,10 @@ func (s *Server) GetParent(w http.ResponseWriter, r *http.Request) {
 		"memo":  name,
 	}
 	b, _ := json.Marshal(payload)
+	log.Printf("grid create account POST url=%s env=%s", s.GridAccountsURL, s.GridEnv)
 	req, err := http.NewRequest(http.MethodPost, s.GridAccountsURL, bytes.NewReader(b))
 	if err != nil {
+		log.Printf("build request error: %v", err)
 		writeJSON(w, http.StatusInternalServerError, apiError{"failed to build request"})
 		return
 	}
@@ -243,13 +256,16 @@ func (s *Server) GetParent(w http.ResponseWriter, r *http.Request) {
 	req.Header.Set("x-idempotency-key", uuid.NewString())
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
+		log.Printf("grid request failed: %v", err)
 		writeJSON(w, http.StatusBadGateway, apiError{"grid request failed"})
 		return
 	}
 	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	log.Printf("grid create account response status=%d body=%s", resp.StatusCode, truncate(respBody, 1024))
 	w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
 	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(w, resp.Body)
+	_, _ = w.Write(respBody)
 }
 
 func (s *Server) GetChild(w http.ResponseWriter, r *http.Request) {
@@ -262,22 +278,27 @@ func (s *Server) GetChild(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, apiError{"missing name"})
 		return
 	}
+	log.Printf("GET /get_child name=%q", name)
 	if parentID, hasParent := parseInt64Query(r, "parent_id"); hasParent {
 		if _, err := s.DB.GetParentByID(parentID); err != nil {
 			if err == sql.ErrNoRows {
+				log.Printf("get_child parent not found parent_id=%d", parentID)
 				writeJSON(w, http.StatusBadRequest, apiError{"parent not found"})
 				return
 			}
+			log.Printf("get_child db error: %v", err)
 			writeJSON(w, http.StatusInternalServerError, apiError{err.Error()})
 			return
 		}
 		kidID, err := s.DB.CreateKid(name, parentID)
 		if err != nil {
+			log.Printf("create kid error: %v", err)
 			writeJSON(w, http.StatusInternalServerError, apiError{err.Error()})
 			return
 		}
 		k, err := s.DB.GetKidByID(kidID)
 		if err != nil {
+			log.Printf("get kid by id error: %v", err)
 			writeJSON(w, http.StatusInternalServerError, apiError{err.Error()})
 			return
 		}
@@ -287,9 +308,11 @@ func (s *Server) GetChild(w http.ResponseWriter, r *http.Request) {
 	k, err := s.DB.GetKidByName(name)
 	if err != nil {
 		if err == sql.ErrNoRows {
+			log.Printf("get_child not found name=%q", name)
 			writeJSON(w, http.StatusOK, nil)
 			return
 		}
+		log.Printf("get_child db error: %v", err)
 		writeJSON(w, http.StatusInternalServerError, apiError{err.Error()})
 		return
 	}
@@ -359,6 +382,7 @@ func (s *Server) VerifyGridOTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.GridOTPVerifyURL == "" || s.GridAPIKey == "" {
+		log.Printf("grid verification not configured: url=%q api_key_set=%t", s.GridOTPVerifyURL, s.GridAPIKey != "")
 		writeJSON(w, http.StatusInternalServerError, apiError{"grid verification not configured"})
 		return
 	}
@@ -368,20 +392,25 @@ func (s *Server) VerifyGridOTP(w http.ResponseWriter, r *http.Request) {
 	}
 	var vr verifyReq
 	if err := json.NewDecoder(r.Body).Decode(&vr); err != nil {
+		log.Printf("/grid/otp_verify invalid json: %v", err)
 		writeJSON(w, http.StatusBadRequest, apiError{"invalid json"})
 		return
 	}
 	if vr.Email == "" || vr.OTP == "" {
+		log.Printf("/grid/otp_verify missing fields email=%q otp_len=%d", vr.Email, len(vr.OTP))
 		writeJSON(w, http.StatusBadRequest, apiError{"email and otp_code required"})
 		return
 	}
+	log.Printf("POST /grid/otp_verify email=%q", vr.Email)
 	p, err := s.DB.GetParentByEmail(vr.Email)
 	if err != nil {
+		log.Printf("parent not found by email: %v", err)
 		writeJSON(w, http.StatusBadRequest, apiError{"parent not found"})
 		return
 	}
 	// ensure keys exist
 	if len(p.HPKEPubDER) == 0 {
+		log.Printf("missing public key for parent_id=%d", p.ID)
 		writeJSON(w, http.StatusInternalServerError, apiError{"public key missing"})
 		return
 	}
@@ -393,8 +422,10 @@ func (s *Server) VerifyGridOTP(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 	b, _ := json.Marshal(payload)
+	log.Printf("grid verify OTP POST url=%s env=%s", s.GridOTPVerifyURL, s.GridEnv)
 	req, err := http.NewRequest(http.MethodPost, s.GridOTPVerifyURL, bytes.NewReader(b))
 	if err != nil {
+		log.Printf("build request error: %v", err)
 		writeJSON(w, http.StatusInternalServerError, apiError{"failed to build request"})
 		return
 	}
@@ -405,11 +436,13 @@ func (s *Server) VerifyGridOTP(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
+		log.Printf("grid request failed: %v", err)
 		writeJSON(w, http.StatusBadGateway, apiError{"grid request failed"})
 		return
 	}
 	defer resp.Body.Close()
 	respBody, _ := io.ReadAll(resp.Body)
+	log.Printf("grid verify response status=%d body=%s", resp.StatusCode, truncate(respBody, 1024))
 
 	// Attempt to extract grid_user_id and address to store
 	var parsed map[string]any
@@ -423,6 +456,7 @@ func (s *Server) VerifyGridOTP(w http.ResponseWriter, r *http.Request) {
 				address = v
 			}
 			if userID != "" || address != "" {
+				log.Printf("storing grid ids for parent_id=%d user_id=%q address=%q", p.ID, userID, address)
 				_ = s.DB.UpdateParentGridIDs(p.ID, userID, address)
 			}
 		}
@@ -430,4 +464,12 @@ func (s *Server) VerifyGridOTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)
 	_, _ = w.Write(respBody)
+}
+
+// truncate limits logged body to n bytes
+func truncate(b []byte, n int) string {
+	if len(b) <= n {
+		return string(b)
+	}
+	return string(b[:n]) + "... (truncated)"
 }
