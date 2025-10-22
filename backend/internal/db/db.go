@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -25,7 +26,13 @@ type Parent struct {
 	ID      int64
 	UID     string
 	Name    string
+	Email   string
 	Balance int64
+	// The following fields are internal and should not be exposed via JSON
+	HPKEPrivDER  []byte `json:"-"`
+	HPKEPubDER   []byte `json:"-"`
+	GridUserID   string `json:"grid_user_id,omitempty"`
+	GridWalletID string `json:"grid_wallet_id,omitempty"`
 }
 
 func Open(path string) (*Database, error) {
@@ -56,7 +63,12 @@ func migrate(db *sql.DB) error {
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			uid TEXT NOT NULL UNIQUE,
 			name TEXT NOT NULL,
+            email TEXT UNIQUE,
 			balance INTEGER NOT NULL DEFAULT 0,
+            hpke_priv_der BLOB,
+            hpke_pub_der BLOB,
+            grid_user_id TEXT,
+            grid_wallet_id TEXT,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		);`,
 		`CREATE TABLE IF NOT EXISTS kids (
@@ -74,7 +86,32 @@ func migrate(db *sql.DB) error {
 			return err
 		}
 	}
+	// Best-effort schema evolution for older databases without the new columns
+	alters := []string{
+		"ALTER TABLE parents ADD COLUMN email TEXT UNIQUE;",
+		"ALTER TABLE parents ADD COLUMN hpke_priv_der BLOB;",
+		"ALTER TABLE parents ADD COLUMN hpke_pub_der BLOB;",
+		"ALTER TABLE parents ADD COLUMN grid_user_id TEXT;",
+		"ALTER TABLE parents ADD COLUMN grid_wallet_id TEXT;",
+	}
+	for _, s := range alters {
+		if _, err := db.Exec(s); err != nil {
+			// ignore duplicate column errors (SQLite: "duplicate column name")
+			if !isSQLiteDuplicateColumnError(err) {
+				// continue on other errors to avoid breaking startup
+				_ = err
+			}
+		}
+	}
 	return nil
+}
+
+func isSQLiteDuplicateColumnError(err error) bool {
+	if err == nil {
+		return false
+	}
+	// SQLite error message contains this substring when adding existing column
+	return strings.Contains(err.Error(), "duplicate column name")
 }
 
 func (d *Database) Close() error {
@@ -87,6 +124,19 @@ func (d *Database) Close() error {
 func (d *Database) CreateParent(name string) (int64, string, error) {
 	uid := uuid.NewString()
 	res, err := d.DB.Exec(`INSERT INTO parents(uid, name) VALUES(?, ?)`, uid, name)
+	if err != nil {
+		return 0, "", err
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, "", err
+	}
+	return id, uid, nil
+}
+
+func (d *Database) CreateParentWithEmail(name, email string) (int64, string, error) {
+	uid := uuid.NewString()
+	res, err := d.DB.Exec(`INSERT INTO parents(uid, name, email) VALUES(?, ?, ?)`, uid, name, email)
 	if err != nil {
 		return 0, "", err
 	}
@@ -149,7 +199,7 @@ func (d *Database) GetKidBalance(kidID int64) (int64, error) {
 
 func (d *Database) GetParentByID(id int64) (*Parent, error) {
 	p := &Parent{}
-	err := d.DB.QueryRow(`SELECT id, uid, name, balance FROM parents WHERE id = ?`, id).Scan(&p.ID, &p.UID, &p.Name, &p.Balance)
+	err := d.DB.QueryRow(`SELECT id, uid, name, email, balance, hpke_priv_der, hpke_pub_der, grid_user_id, grid_wallet_id FROM parents WHERE id = ?`, id).Scan(&p.ID, &p.UID, &p.Name, &p.Email, &p.Balance, &p.HPKEPrivDER, &p.HPKEPubDER, &p.GridUserID, &p.GridWalletID)
 	if err != nil {
 		return nil, err
 	}
@@ -158,7 +208,16 @@ func (d *Database) GetParentByID(id int64) (*Parent, error) {
 
 func (d *Database) GetParentByName(name string) (*Parent, error) {
 	p := &Parent{}
-	err := d.DB.QueryRow(`SELECT id, uid, name, balance FROM parents WHERE name = ?`, name).Scan(&p.ID, &p.UID, &p.Name, &p.Balance)
+	err := d.DB.QueryRow(`SELECT id, uid, name, email, balance, hpke_priv_der, hpke_pub_der, grid_user_id, grid_wallet_id FROM parents WHERE name = ?`, name).Scan(&p.ID, &p.UID, &p.Name, &p.Email, &p.Balance, &p.HPKEPrivDER, &p.HPKEPubDER, &p.GridUserID, &p.GridWalletID)
+	if err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
+func (d *Database) GetParentByEmail(email string) (*Parent, error) {
+	p := &Parent{}
+	err := d.DB.QueryRow(`SELECT id, uid, name, email, balance, hpke_priv_der, hpke_pub_der, grid_user_id, grid_wallet_id FROM parents WHERE email = ?`, email).Scan(&p.ID, &p.UID, &p.Name, &p.Email, &p.Balance, &p.HPKEPrivDER, &p.HPKEPubDER, &p.GridUserID, &p.GridWalletID)
 	if err != nil {
 		return nil, err
 	}
@@ -196,6 +255,31 @@ func (d *Database) GetOrCreateParentByName(name string) (*Parent, error) {
 		return d.GetParentByID(id)
 	}
 	return nil, err
+}
+
+func (d *Database) GetOrCreateParentByEmail(name, email string) (*Parent, error) {
+	p, err := d.GetParentByEmail(email)
+	if err == nil {
+		return p, nil
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		id, _, errCreate := d.CreateParentWithEmail(name, email)
+		if errCreate != nil {
+			return nil, errCreate
+		}
+		return d.GetParentByID(id)
+	}
+	return nil, err
+}
+
+func (d *Database) SetParentHPKEKeys(parentID int64, privDER, pubDER []byte) error {
+	_, err := d.DB.Exec(`UPDATE parents SET hpke_priv_der = ?, hpke_pub_der = ? WHERE id = ?`, privDER, pubDER, parentID)
+	return err
+}
+
+func (d *Database) UpdateParentGridIDs(parentID int64, gridUserID, gridWalletID string) error {
+	_, err := d.DB.Exec(`UPDATE parents SET grid_user_id = ?, grid_wallet_id = ? WHERE id = ?`, gridUserID, gridWalletID, parentID)
+	return err
 }
 
 func (d *Database) TopUpParent(parentID int64, amount int64) (int64, error) {

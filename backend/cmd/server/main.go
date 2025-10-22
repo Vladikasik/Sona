@@ -26,14 +26,31 @@ func main() {
 		}
 	}()
 
-	s := &handlers.Server{DB: database}
+	gridEnv := os.Getenv("GRID_ENV")
+	if gridEnv == "" {
+		gridEnv = "sandbox"
+	}
+	gridAPIKey := os.Getenv("GRID_API_KEY")
+	// Base URL and OTP URL can be configured, defaults provided
+	gridBaseURL := os.Getenv("GRID_BASE_URL")
+	if gridBaseURL == "" {
+		gridBaseURL = "https://grid.squads.xyz/api/grid/v1/"
+	}
+	gridOTPURL := os.Getenv("GRID_OTP_VERIFY_URL")
+	if gridOTPURL == "" {
+		gridOTPURL = gridBaseURL + "accounts/verify"
+	}
 
-	// simplified endpoints
-	http.HandleFunc("/get_parent", s.GetParent)
-	http.HandleFunc("/get_child", s.GetChild)
-	http.HandleFunc("/list_kids", s.KidsList)
-	http.HandleFunc("/parent_topup", s.ParentTopUp)
-	http.HandleFunc("/send_kid_money", s.SendKidMoney)
+	accountsURL := os.Getenv("GRID_ACCOUNTS_URL")
+	if accountsURL == "" {
+		accountsURL = gridBaseURL + "accounts"
+	}
+	s := &handlers.Server{DB: database, GridEnv: gridEnv, GridAPIKey: gridAPIKey, GridBaseURL: gridBaseURL, GridOTPVerifyURL: gridOTPURL, GridAccountsURL: accountsURL}
+
+	// Endpoints kept for current scope
+	http.HandleFunc("/get_parent", s.GetParent)          // triggers Grid account creation
+	http.HandleFunc("/grid/otp_verify", s.VerifyGridOTP) // OTP verification
+	http.HandleFunc("/list_kids", s.KidsList)            // list kid profiles for a parent
 
 	bindAddr := os.Getenv("BIND_ADDR")
 	if bindAddr == "" {
