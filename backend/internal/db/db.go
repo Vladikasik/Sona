@@ -199,27 +199,48 @@ func (d *Database) GetKidBalance(kidID int64) (int64, error) {
 
 func (d *Database) GetParentByID(id int64) (*Parent, error) {
 	p := &Parent{}
-	err := d.DB.QueryRow(`SELECT id, uid, name, email, balance, hpke_priv_der, hpke_pub_der, grid_user_id, grid_wallet_id FROM parents WHERE id = ?`, id).Scan(&p.ID, &p.UID, &p.Name, &p.Email, &p.Balance, &p.HPKEPrivDER, &p.HPKEPubDER, &p.GridUserID, &p.GridWalletID)
+	var gridUserNS, gridWalletNS sql.NullString
+	err := d.DB.QueryRow(`SELECT id, uid, name, email, balance, hpke_priv_der, hpke_pub_der, grid_user_id, grid_wallet_id FROM parents WHERE id = ?`, id).Scan(&p.ID, &p.UID, &p.Name, &p.Email, &p.Balance, &p.HPKEPrivDER, &p.HPKEPubDER, &gridUserNS, &gridWalletNS)
 	if err != nil {
 		return nil, err
+	}
+	if gridUserNS.Valid {
+		p.GridUserID = gridUserNS.String
+	}
+	if gridWalletNS.Valid {
+		p.GridWalletID = gridWalletNS.String
 	}
 	return p, nil
 }
 
 func (d *Database) GetParentByName(name string) (*Parent, error) {
 	p := &Parent{}
-	err := d.DB.QueryRow(`SELECT id, uid, name, email, balance, hpke_priv_der, hpke_pub_der, grid_user_id, grid_wallet_id FROM parents WHERE name = ?`, name).Scan(&p.ID, &p.UID, &p.Name, &p.Email, &p.Balance, &p.HPKEPrivDER, &p.HPKEPubDER, &p.GridUserID, &p.GridWalletID)
+	var gridUserNS, gridWalletNS sql.NullString
+	err := d.DB.QueryRow(`SELECT id, uid, name, email, balance, hpke_priv_der, hpke_pub_der, grid_user_id, grid_wallet_id FROM parents WHERE name = ?`, name).Scan(&p.ID, &p.UID, &p.Name, &p.Email, &p.Balance, &p.HPKEPrivDER, &p.HPKEPubDER, &gridUserNS, &gridWalletNS)
 	if err != nil {
 		return nil, err
+	}
+	if gridUserNS.Valid {
+		p.GridUserID = gridUserNS.String
+	}
+	if gridWalletNS.Valid {
+		p.GridWalletID = gridWalletNS.String
 	}
 	return p, nil
 }
 
 func (d *Database) GetParentByEmail(email string) (*Parent, error) {
 	p := &Parent{}
-	err := d.DB.QueryRow(`SELECT id, uid, name, email, balance, hpke_priv_der, hpke_pub_der, grid_user_id, grid_wallet_id FROM parents WHERE email = ?`, email).Scan(&p.ID, &p.UID, &p.Name, &p.Email, &p.Balance, &p.HPKEPrivDER, &p.HPKEPubDER, &p.GridUserID, &p.GridWalletID)
+	var gridUserNS, gridWalletNS sql.NullString
+	err := d.DB.QueryRow(`SELECT id, uid, name, email, balance, hpke_priv_der, hpke_pub_der, grid_user_id, grid_wallet_id FROM parents WHERE email = ?`, email).Scan(&p.ID, &p.UID, &p.Name, &p.Email, &p.Balance, &p.HPKEPrivDER, &p.HPKEPubDER, &gridUserNS, &gridWalletNS)
 	if err != nil {
 		return nil, err
+	}
+	if gridUserNS.Valid {
+		p.GridUserID = gridUserNS.String
+	}
+	if gridWalletNS.Valid {
+		p.GridWalletID = gridWalletNS.String
 	}
 	return p, nil
 }
