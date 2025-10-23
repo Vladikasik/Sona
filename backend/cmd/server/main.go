@@ -41,17 +41,28 @@ func main() {
 		gridOTPURL = gridBaseURL + "accounts/verify"
 	}
 
+	// Auth endpoints for existing users
+	gridAuthInitURL := os.Getenv("GRID_AUTH_INIT_URL")
+	if gridAuthInitURL == "" {
+		gridAuthInitURL = gridBaseURL + "auth"
+	}
+	gridAuthVerifyURL := os.Getenv("GRID_AUTH_VERIFY_URL")
+	if gridAuthVerifyURL == "" {
+		gridAuthVerifyURL = gridBaseURL + "auth/verify"
+	}
+
 	accountsURL := os.Getenv("GRID_ACCOUNTS_URL")
 	if accountsURL == "" {
 		accountsURL = gridBaseURL + "accounts"
 	}
-	s := &handlers.Server{DB: database, GridEnv: gridEnv, GridAPIKey: gridAPIKey, GridBaseURL: gridBaseURL, GridOTPVerifyURL: gridOTPURL, GridAccountsURL: accountsURL}
+	s := &handlers.Server{DB: database, GridEnv: gridEnv, GridAPIKey: gridAPIKey, GridBaseURL: gridBaseURL, GridOTPVerifyURL: gridOTPURL, GridAccountsURL: accountsURL, GridAuthInitURL: gridAuthInitURL, GridAuthVerifyURL: gridAuthVerifyURL}
 
 	// Endpoints kept for current scope
-	http.HandleFunc("/get_parent", s.GetParent)          // triggers Grid account creation
-	http.HandleFunc("/grid/otp_verify", s.VerifyGridOTP) // OTP verification
-	http.HandleFunc("/list_kids", s.KidsList)            // list kid profiles for a parent
-	http.HandleFunc("/get_child", s.GetChild)            // create or fetch child record
+	http.HandleFunc("/get_parent", s.GetParent)                   // triggers Grid account creation or auth initiation
+	http.HandleFunc("/grid/otp_verify", s.VerifyGridOTP)          // OTP verification for registration
+	http.HandleFunc("/grid/auth_otp_verify", s.VerifyGridAuthOTP) // OTP verification for authentication
+	http.HandleFunc("/list_kids", s.KidsList)                     // list kid profiles for a parent
+	http.HandleFunc("/get_child", s.GetChild)                     // create or fetch child record
 
 	bindAddr := os.Getenv("BIND_ADDR")
 	if bindAddr == "" {

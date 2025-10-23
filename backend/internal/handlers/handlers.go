@@ -13,6 +13,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"sona-backend/internal/db"
 
@@ -22,11 +23,13 @@ import (
 type Server struct {
 	DB *db.Database
 	// Grid configuration
-	GridEnv          string
-	GridAPIKey       string
-	GridBaseURL      string
-	GridOTPVerifyURL string
-	GridAccountsURL  string
+	GridEnv           string
+	GridAPIKey        string
+	GridBaseURL       string
+	GridOTPVerifyURL  string
+	GridAccountsURL   string
+	GridAuthInitURL   string
+	GridAuthVerifyURL string
 }
 
 type apiError struct {
@@ -263,9 +266,68 @@ func (s *Server) GetParent(w http.ResponseWriter, r *http.Request) {
 	defer resp.Body.Close()
 	respBody, _ := io.ReadAll(resp.Body)
 	log.Printf("grid create account response status=%d body=%s", resp.StatusCode, truncate(respBody, 1024))
-	w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
-	w.WriteHeader(resp.StatusCode)
-	_, _ = w.Write(respBody)
+
+	// If account creation indicates existing user, initiate authentication flow instead
+	shouldAuth := false
+	if resp.StatusCode == http.StatusConflict || (resp.StatusCode >= 300 && resp.StatusCode < 400) {
+		shouldAuth = true
+	} else if resp.StatusCode >= 400 {
+		var msg map[string]any
+		if err := json.Unmarshal(respBody, &msg); err == nil {
+			m := strings.ToLower(string(respBody))
+			if strings.Contains(m, "exists") || strings.Contains(m, "resource_exists") || strings.Contains(m, "already") {
+				shouldAuth = true
+			}
+		}
+	}
+
+	if shouldAuth {
+		if s.GridAuthInitURL == "" {
+			writeJSON(w, http.StatusInternalServerError, apiError{"grid auth not configured"})
+			return
+		}
+		authPayload := map[string]any{
+			"email":    email,
+			"provider": "privy",
+		}
+		ab, _ := json.Marshal(authPayload)
+		log.Printf("grid auth initiate POST url=%s env=%s", s.GridAuthInitURL, s.GridEnv)
+		areq, err := http.NewRequest(http.MethodPost, s.GridAuthInitURL, bytes.NewReader(ab))
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, apiError{"failed to build auth request"})
+			return
+		}
+		areq.Header.Set("Content-Type", "application/json")
+		areq.Header.Set("Authorization", "Bearer "+s.GridAPIKey)
+		areq.Header.Set("x-grid-environment", s.GridEnv)
+		areq.Header.Set("x-idempotency-key", uuid.NewString())
+		aresp, err := http.DefaultClient.Do(areq)
+		if err != nil {
+			writeJSON(w, http.StatusBadGateway, apiError{"grid auth request failed"})
+			return
+		}
+		defer aresp.Body.Close()
+		abody, _ := io.ReadAll(aresp.Body)
+		log.Printf("grid auth initiate response status=%d body=%s", aresp.StatusCode, truncate(abody, 1024))
+
+		var gridObj any
+		_ = json.Unmarshal(abody, &gridObj)
+		writeJSON(w, aresp.StatusCode, map[string]any{
+			"user_type":       "existing",
+			"otp_verify_path": "/grid/auth_otp_verify",
+			"grid":            gridObj,
+		})
+		return
+	}
+
+	// New user registration path
+	var gridObj any
+	_ = json.Unmarshal(respBody, &gridObj)
+	writeJSON(w, resp.StatusCode, map[string]any{
+		"user_type":       "new",
+		"otp_verify_path": "/grid/otp_verify",
+		"grid":            gridObj,
+	})
 }
 
 func (s *Server) GetChild(w http.ResponseWriter, r *http.Request) {
@@ -457,6 +519,85 @@ func (s *Server) VerifyGridOTP(w http.ResponseWriter, r *http.Request) {
 			}
 			if userID != "" || address != "" {
 				log.Printf("storing grid ids for parent_id=%d user_id=%q address=%q", p.ID, userID, address)
+				_ = s.DB.UpdateParentGridIDs(p.ID, userID, address)
+			}
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(resp.StatusCode)
+	_, _ = w.Write(respBody)
+}
+
+// VerifyGridAuthOTP proxies OTP verification for existing Grid accounts (authentication flow).
+func (s *Server) VerifyGridAuthOTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, apiError{"method not allowed"})
+		return
+	}
+	if s.GridAuthVerifyURL == "" || s.GridAPIKey == "" {
+		log.Printf("grid auth verification not configured: url=%q api_key_set=%t", s.GridAuthVerifyURL, s.GridAPIKey != "")
+		writeJSON(w, http.StatusInternalServerError, apiError{"grid auth verification not configured"})
+		return
+	}
+	type verifyReq struct {
+		Email string `json:"email"`
+		OTP   string `json:"otp_code"`
+	}
+	var vr verifyReq
+	if err := json.NewDecoder(r.Body).Decode(&vr); err != nil {
+		writeJSON(w, http.StatusBadRequest, apiError{"invalid json"})
+		return
+	}
+	if vr.Email == "" || vr.OTP == "" {
+		writeJSON(w, http.StatusBadRequest, apiError{"email and otp_code required"})
+		return
+	}
+	p, err := s.DB.GetParentByEmail(vr.Email)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, apiError{"parent not found"})
+		return
+	}
+	if len(p.HPKEPubDER) == 0 {
+		writeJSON(w, http.StatusInternalServerError, apiError{"public key missing"})
+		return
+	}
+	payload := map[string]any{
+		"email":        vr.Email,
+		"otp_code":     vr.OTP,
+		"kms_provider": "privy",
+		"kms_provider_config": map[string]any{
+			"encryption_public_key": base64.StdEncoding.EncodeToString(p.HPKEPubDER),
+		},
+	}
+	b, _ := json.Marshal(payload)
+	req, err := http.NewRequest(http.MethodPost, s.GridAuthVerifyURL, bytes.NewReader(b))
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiError{"failed to build request"})
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+s.GridAPIKey)
+	req.Header.Set("x-grid-environment", s.GridEnv)
+	req.Header.Set("x-idempotency-key", uuid.NewString())
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, apiError{"grid request failed"})
+		return
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	// Store grid ids if present
+	var parsed map[string]any
+	if err := json.Unmarshal(respBody, &parsed); err == nil {
+		if data, ok := parsed["data"].(map[string]any); ok {
+			var userID, address string
+			if v, ok := data["grid_user_id"].(string); ok {
+				userID = v
+			}
+			if v, ok := data["address"].(string); ok {
+				address = v
+			}
+			if userID != "" || address != "" {
 				_ = s.DB.UpdateParentGridIDs(p.ID, userID, address)
 			}
 		}
