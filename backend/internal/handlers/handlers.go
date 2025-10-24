@@ -104,12 +104,12 @@ func (s *Server) RegisterKid(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, apiError{"missing parent_id"})
 		return
 	}
-	id, err := s.DB.CreateKid(name, parentID)
+	kidID, _, err := s.DB.CreateKid(name, "", parentID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, apiError{err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"kid_id": id})
+	writeJSON(w, http.StatusOK, map[string]any{"kid_id": kidID})
 }
 
 func (s *Server) KidsList(w http.ResponseWriter, r *http.Request) {
@@ -352,7 +352,7 @@ func (s *Server) GetChild(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusInternalServerError, apiError{err.Error()})
 			return
 		}
-		kidID, err := s.DB.CreateKid(name, parentID)
+		kidID, _, err := s.DB.CreateKid(name, "", parentID)
 		if err != nil {
 			log.Printf("create kid error: %v", err)
 			writeJSON(w, http.StatusInternalServerError, apiError{err.Error()})
@@ -379,6 +379,327 @@ func (s *Server) GetChild(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, k)
+}
+
+// GetUser unifies parent and kid registration/login flows behind a single endpoint.
+// Query params:
+// - user_type: "parent" | "kid" (or "child")
+// - name: required for both
+// - email: required for parent
+// - parent_id: optional for kid (if provided, will create kid under parent)
+func (s *Server) GetUser(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, apiError{"method not allowed"})
+		return
+	}
+	userType, ok := parseStringQuery(r, "user_type")
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, apiError{"missing user_type"})
+		return
+	}
+	name, ok := parseStringQuery(r, "name")
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, apiError{"missing name"})
+		return
+	}
+
+	switch strings.ToLower(userType) {
+	case "parent":
+		email, ok := parseStringQuery(r, "email")
+		if !ok || email == "" {
+			writeJSON(w, http.StatusBadRequest, apiError{"missing email"})
+			return
+		}
+		log.Printf("GET /get_user type=parent name=%q email=%q", name, email)
+
+		// Ensure a parent record exists and keys are generated (same as GetParent)
+		p, err := s.DB.GetOrCreateParentByEmail(name, email)
+		if err != nil {
+			log.Printf("get/create parent error: %v", err)
+			writeJSON(w, http.StatusInternalServerError, apiError{err.Error()})
+			return
+		}
+		if len(p.HPKEPubDER) == 0 || len(p.HPKEPrivDER) == 0 {
+			log.Printf("generating HPKE P-256 keys for parent_id=%d", p.ID)
+			priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+			if err != nil {
+				log.Printf("key generation failed: %v", err)
+				writeJSON(w, http.StatusInternalServerError, apiError{"key generation failed"})
+				return
+			}
+			privDER, err := x509.MarshalECPrivateKey(priv)
+			if err != nil {
+				log.Printf("private key DER marshal failed: %v", err)
+				writeJSON(w, http.StatusInternalServerError, apiError{"private key DER marshal failed"})
+				return
+			}
+			pubDER, err := x509.MarshalPKIXPublicKey(&priv.PublicKey)
+			if err != nil {
+				log.Printf("public key DER marshal failed: %v", err)
+				writeJSON(w, http.StatusInternalServerError, apiError{"public key DER marshal failed"})
+				return
+			}
+			if err := s.DB.SetParentHPKEKeys(p.ID, privDER, pubDER); err != nil {
+				log.Printf("db store keys failed: %v", err)
+				writeJSON(w, http.StatusInternalServerError, apiError{err.Error()})
+				return
+			}
+		}
+
+		// Call Grid Create Account (email type) or fall back to auth if exists (same as GetParent)
+		if s.GridAccountsURL == "" || s.GridAPIKey == "" {
+			log.Printf("grid not configured: accounts_url=%q api_key_set=%t", s.GridAccountsURL, s.GridAPIKey != "")
+			writeJSON(w, http.StatusInternalServerError, apiError{"grid not configured"})
+			return
+		}
+		payload := map[string]any{
+			"type":  "email",
+			"email": email,
+			"memo":  name,
+		}
+		b, _ := json.Marshal(payload)
+		log.Printf("grid create account POST url=%s env=%s", s.GridAccountsURL, s.GridEnv)
+		req, err := http.NewRequest(http.MethodPost, s.GridAccountsURL, bytes.NewReader(b))
+		if err != nil {
+			log.Printf("build request error: %v", err)
+			writeJSON(w, http.StatusInternalServerError, apiError{"failed to build request"})
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+s.GridAPIKey)
+		req.Header.Set("x-grid-environment", s.GridEnv)
+		req.Header.Set("x-idempotency-key", uuid.NewString())
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			log.Printf("grid request failed: %v", err)
+			writeJSON(w, http.StatusBadGateway, apiError{"grid request failed"})
+			return
+		}
+		defer resp.Body.Close()
+		respBody, _ := io.ReadAll(resp.Body)
+		log.Printf("grid create account response status=%d body=%s", resp.StatusCode, truncate(respBody, 1024))
+
+		// If account creation indicates existing user, initiate authentication flow instead
+		shouldAuth := false
+		if resp.StatusCode == http.StatusConflict || (resp.StatusCode >= 300 && resp.StatusCode < 400) {
+			shouldAuth = true
+		} else if resp.StatusCode >= 400 {
+			var msg map[string]any
+			if err := json.Unmarshal(respBody, &msg); err == nil {
+				m := strings.ToLower(string(respBody))
+				if strings.Contains(m, "exists") || strings.Contains(m, "resource_exists") || strings.Contains(m, "already") {
+					shouldAuth = true
+				}
+			}
+		}
+
+		if shouldAuth {
+			if s.GridAuthInitURL == "" {
+				writeJSON(w, http.StatusInternalServerError, apiError{"grid auth not configured"})
+				return
+			}
+			authPayload := map[string]any{
+				"email":    email,
+				"provider": "privy",
+			}
+			ab, _ := json.Marshal(authPayload)
+			log.Printf("grid auth initiate POST url=%s env=%s", s.GridAuthInitURL, s.GridEnv)
+			areq, err := http.NewRequest(http.MethodPost, s.GridAuthInitURL, bytes.NewReader(ab))
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, apiError{"failed to build auth request"})
+				return
+			}
+			areq.Header.Set("Content-Type", "application/json")
+			areq.Header.Set("Authorization", "Bearer "+s.GridAPIKey)
+			areq.Header.Set("x-grid-environment", s.GridEnv)
+			areq.Header.Set("x-idempotency-key", uuid.NewString())
+			aresp, err := http.DefaultClient.Do(areq)
+			if err != nil {
+				writeJSON(w, http.StatusBadGateway, apiError{"grid auth request failed"})
+				return
+			}
+			defer aresp.Body.Close()
+			abody, _ := io.ReadAll(aresp.Body)
+			log.Printf("grid auth initiate response status=%d body=%s", aresp.StatusCode, truncate(abody, 1024))
+
+			var gridObj any
+			_ = json.Unmarshal(abody, &gridObj)
+			writeJSON(w, aresp.StatusCode, map[string]any{
+				"user_type":       "existing",
+				"otp_verify_path": "/grid/auth_otp_verify",
+				"grid":            gridObj,
+			})
+			return
+		}
+
+		// New user registration path
+		var gridObj any
+		_ = json.Unmarshal(respBody, &gridObj)
+		writeJSON(w, resp.StatusCode, map[string]any{
+			"user_type":       "new",
+			"otp_verify_path": "/grid/otp_verify",
+			"grid":            gridObj,
+		})
+		return
+
+	case "kid", "child":
+		// For kids, require parent_id and email; mirror parent Grid flow
+		email, ok := parseStringQuery(r, "email")
+		if !ok || email == "" {
+			writeJSON(w, http.StatusBadRequest, apiError{"missing email"})
+			return
+		}
+		parentID, ok := parseInt64Query(r, "parent_id")
+		if !ok {
+			writeJSON(w, http.StatusBadRequest, apiError{"missing parent_id"})
+			return
+		}
+		if _, err := s.DB.GetParentByID(parentID); err != nil {
+			if err == sql.ErrNoRows {
+				writeJSON(w, http.StatusBadRequest, apiError{"parent not found"})
+				return
+			}
+			writeJSON(w, http.StatusInternalServerError, apiError{err.Error()})
+			return
+		}
+
+		// Ensure kid record exists (by name+parent) or create; set email if empty
+		k, err := s.DB.GetKidByNameAndParent(name, parentID)
+		if err == sql.ErrNoRows {
+			_, _, errCreate := s.DB.CreateKid(name, email, parentID)
+			if errCreate != nil {
+				writeJSON(w, http.StatusInternalServerError, apiError{errCreate.Error()})
+				return
+			}
+			k, err = s.DB.GetKidByNameAndParent(name, parentID)
+		}
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, apiError{err.Error()})
+			return
+		}
+		if k.Email == "" {
+			// set email on first time
+			// reuse UpdateKidGridIDs to avoid new method; use separate update
+			_, err := s.DB.DB.Exec(`UPDATE kids SET email = ? WHERE id = ?`, email, k.ID)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, apiError{err.Error()})
+				return
+			}
+			k.Email = email
+		}
+
+		// Ensure HPKE keys exist for kid
+		if len(k.HPKEPubDER) == 0 || len(k.HPKEPrivDER) == 0 {
+			priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, apiError{"key generation failed"})
+				return
+			}
+			privDER, err := x509.MarshalECPrivateKey(priv)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, apiError{"private key DER marshal failed"})
+				return
+			}
+			pubDER, err := x509.MarshalPKIXPublicKey(&priv.PublicKey)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, apiError{"public key DER marshal failed"})
+				return
+			}
+			if err := s.DB.SetKidHPKEKeys(k.ID, privDER, pubDER); err != nil {
+				writeJSON(w, http.StatusInternalServerError, apiError{err.Error()})
+				return
+			}
+			k, _ = s.DB.GetKidByID(k.ID)
+		}
+
+		// Mirror Grid flow using kid email
+		if s.GridAccountsURL == "" || s.GridAPIKey == "" {
+			writeJSON(w, http.StatusInternalServerError, apiError{"grid not configured"})
+			return
+		}
+		payload := map[string]any{
+			"type":  "email",
+			"email": email,
+			"memo":  name,
+		}
+		b, _ := json.Marshal(payload)
+		req, err := http.NewRequest(http.MethodPost, s.GridAccountsURL, bytes.NewReader(b))
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, apiError{"failed to build request"})
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+s.GridAPIKey)
+		req.Header.Set("x-grid-environment", s.GridEnv)
+		req.Header.Set("x-idempotency-key", uuid.NewString())
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			writeJSON(w, http.StatusBadGateway, apiError{"grid request failed"})
+			return
+		}
+		defer resp.Body.Close()
+		respBody, _ := io.ReadAll(resp.Body)
+
+		shouldAuth := false
+		if resp.StatusCode == http.StatusConflict || (resp.StatusCode >= 300 && resp.StatusCode < 400) {
+			shouldAuth = true
+		} else if resp.StatusCode >= 400 {
+			m := strings.ToLower(string(respBody))
+			if strings.Contains(m, "exists") || strings.Contains(m, "resource_exists") || strings.Contains(m, "already") {
+				shouldAuth = true
+			}
+		}
+
+		if shouldAuth {
+			if s.GridAuthInitURL == "" {
+				writeJSON(w, http.StatusInternalServerError, apiError{"grid auth not configured"})
+				return
+			}
+			authPayload := map[string]any{
+				"email":    email,
+				"provider": "privy",
+			}
+			ab, _ := json.Marshal(authPayload)
+			areq, err := http.NewRequest(http.MethodPost, s.GridAuthInitURL, bytes.NewReader(ab))
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, apiError{"failed to build auth request"})
+				return
+			}
+			areq.Header.Set("Content-Type", "application/json")
+			areq.Header.Set("Authorization", "Bearer "+s.GridAPIKey)
+			areq.Header.Set("x-grid-environment", s.GridEnv)
+			areq.Header.Set("x-idempotency-key", uuid.NewString())
+			aresp, err := http.DefaultClient.Do(areq)
+			if err != nil {
+				writeJSON(w, http.StatusBadGateway, apiError{"grid auth request failed"})
+				return
+			}
+			defer aresp.Body.Close()
+			abody, _ := io.ReadAll(aresp.Body)
+
+			var gridObj any
+			_ = json.Unmarshal(abody, &gridObj)
+			writeJSON(w, aresp.StatusCode, map[string]any{
+				"user_type":       "existing",
+				"otp_verify_path": "/grid/auth_otp_verify",
+				"grid":            gridObj,
+			})
+			return
+		}
+
+		var gridObj any
+		_ = json.Unmarshal(respBody, &gridObj)
+		writeJSON(w, resp.StatusCode, map[string]any{
+			"user_type":       "new",
+			"otp_verify_path": "/grid/otp_verify",
+			"grid":            gridObj,
+		})
+		return
+
+	default:
+		writeJSON(w, http.StatusBadRequest, apiError{"invalid user_type"})
+		return
+	}
 }
 
 // RegisterGridAccount registers a parent with email, generates HPKE P-256 keys in DER, stores them, and returns public key for Grid.

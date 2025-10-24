@@ -63,6 +63,7 @@ func main() {
 	http.HandleFunc("/grid/auth_otp_verify", s.VerifyGridAuthOTP) // OTP verification for authentication
 	http.HandleFunc("/list_kids", s.KidsList)                     // list kid profiles for a parent
 	http.HandleFunc("/get_child", s.GetChild)                     // create or fetch child record
+	http.HandleFunc("/get_user", s.GetUser)                       // unified handler for parent and kid
 
 	bindAddr := os.Getenv("BIND_ADDR")
 	if bindAddr == "" {

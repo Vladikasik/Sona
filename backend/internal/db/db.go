@@ -17,9 +17,17 @@ type Database struct {
 }
 
 type Kid struct {
-	ID      int64
-	Name    string
-	Balance int64
+	ID       int64  `json:"id"`
+	UID      string `json:"uid"`
+	ParentID int64  `json:"-"`
+	Email    string `json:"email"`
+	Name     string `json:"name"`
+	Balance  int64  `json:"balance"`
+	// internal fields
+	HPKEPrivDER  []byte `json:"-"`
+	HPKEPubDER   []byte `json:"-"`
+	GridUserID   string `json:"grid_user_id,omitempty"`
+	GridWalletID string `json:"grid_wallet_id,omitempty"`
 }
 
 type Parent struct {
@@ -72,14 +80,17 @@ func migrate(db *sql.DB) error {
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		);`,
 		`CREATE TABLE IF NOT EXISTS kids (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			parent_id INTEGER NOT NULL,
-			name TEXT NOT NULL,
-			balance INTEGER NOT NULL DEFAULT 0,
-			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-			FOREIGN KEY(parent_id) REFERENCES parents(id) ON DELETE CASCADE ON UPDATE CASCADE
-		);`,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            uid TEXT UNIQUE,
+            parent_id INTEGER NOT NULL,
+            email TEXT UNIQUE,
+            name TEXT NOT NULL,
+            balance INTEGER NOT NULL DEFAULT 0,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(parent_id) REFERENCES parents(id) ON DELETE CASCADE ON UPDATE CASCADE
+        );`,
 		"CREATE INDEX IF NOT EXISTS idx_kids_parent_id ON kids(parent_id);",
+		"CREATE UNIQUE INDEX IF NOT EXISTS idx_kids_uid ON kids(uid);",
 	}
 	for _, s := range stmts {
 		if _, err := db.Exec(s); err != nil {
@@ -93,6 +104,12 @@ func migrate(db *sql.DB) error {
 		"ALTER TABLE parents ADD COLUMN hpke_pub_der BLOB;",
 		"ALTER TABLE parents ADD COLUMN grid_user_id TEXT;",
 		"ALTER TABLE parents ADD COLUMN grid_wallet_id TEXT;",
+		"ALTER TABLE kids ADD COLUMN uid TEXT UNIQUE;",
+		"ALTER TABLE kids ADD COLUMN email TEXT UNIQUE;",
+		"ALTER TABLE kids ADD COLUMN hpke_priv_der BLOB;",
+		"ALTER TABLE kids ADD COLUMN hpke_pub_der BLOB;",
+		"ALTER TABLE kids ADD COLUMN grid_user_id TEXT;",
+		"ALTER TABLE kids ADD COLUMN grid_wallet_id TEXT;",
 	}
 	for _, s := range alters {
 		if _, err := db.Exec(s); err != nil {
@@ -102,6 +119,21 @@ func migrate(db *sql.DB) error {
 				_ = err
 			}
 		}
+	}
+	// Backfill missing kid uids
+	rows, err := db.Query(`SELECT id, IFNULL(uid, '') FROM kids`)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var id int64
+			var uid string
+			if err := rows.Scan(&id, &uid); err == nil {
+				if strings.TrimSpace(uid) == "" {
+					_, _ = db.Exec(`UPDATE kids SET uid = ? WHERE id = ?`, uuid.NewString(), id)
+				}
+			}
+		}
+		_ = rows.Err()
 	}
 	return nil
 }
@@ -147,16 +179,17 @@ func (d *Database) CreateParentWithEmail(name, email string) (int64, string, err
 	return id, uid, nil
 }
 
-func (d *Database) CreateKid(name string, parentID int64) (int64, error) {
-	res, err := d.DB.Exec(`INSERT INTO kids(parent_id, name) VALUES(?, ?)`, parentID, name)
+func (d *Database) CreateKid(name, email string, parentID int64) (int64, string, error) {
+	kidUID := uuid.NewString()
+	res, err := d.DB.Exec(`INSERT INTO kids(uid, parent_id, email, name) VALUES(?, ?, ?, ?)`, kidUID, parentID, email, name)
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	id, err := res.LastInsertId()
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
-	return id, nil
+	return id, kidUID, nil
 }
 
 func (d *Database) ListKids(parentID int64) ([]Kid, error) {
@@ -247,7 +280,7 @@ func (d *Database) GetParentByEmail(email string) (*Parent, error) {
 
 func (d *Database) GetKidByID(id int64) (*Kid, error) {
 	k := &Kid{}
-	err := d.DB.QueryRow(`SELECT id, name, balance FROM kids WHERE id = ?`, id).Scan(&k.ID, &k.Name, &k.Balance)
+	err := d.DB.QueryRow(`SELECT id, uid, parent_id, email, name, balance, hpke_priv_der, hpke_pub_der, grid_user_id, grid_wallet_id FROM kids WHERE id = ?`, id).Scan(&k.ID, &k.UID, &k.ParentID, &k.Email, &k.Name, &k.Balance, &k.HPKEPrivDER, &k.HPKEPubDER, &k.GridUserID, &k.GridWalletID)
 	if err != nil {
 		return nil, err
 	}
@@ -256,11 +289,70 @@ func (d *Database) GetKidByID(id int64) (*Kid, error) {
 
 func (d *Database) GetKidByName(name string) (*Kid, error) {
 	k := &Kid{}
-	err := d.DB.QueryRow(`SELECT id, name, balance FROM kids WHERE name = ?`, name).Scan(&k.ID, &k.Name, &k.Balance)
+	err := d.DB.QueryRow(`SELECT id, uid, parent_id, email, name, balance, hpke_priv_der, hpke_pub_der, grid_user_id, grid_wallet_id FROM kids WHERE name = ?`, name).Scan(&k.ID, &k.UID, &k.ParentID, &k.Email, &k.Name, &k.Balance, &k.HPKEPrivDER, &k.HPKEPubDER, &k.GridUserID, &k.GridWalletID)
 	if err != nil {
 		return nil, err
 	}
 	return k, nil
+}
+
+func (d *Database) GetKidByNameAndParent(name string, parentID int64) (*Kid, error) {
+	k := &Kid{}
+	err := d.DB.QueryRow(`SELECT id, uid, parent_id, email, name, balance, hpke_priv_der, hpke_pub_der, grid_user_id, grid_wallet_id FROM kids WHERE name = ? AND parent_id = ?`, name, parentID).Scan(&k.ID, &k.UID, &k.ParentID, &k.Email, &k.Name, &k.Balance, &k.HPKEPrivDER, &k.HPKEPubDER, &k.GridUserID, &k.GridWalletID)
+	if err != nil {
+		return nil, err
+	}
+	return k, nil
+}
+
+func (d *Database) GetOrCreateKidForParent(name, email string, parentID int64) (*Kid, error) {
+	k, err := d.GetKidByNameAndParent(name, parentID)
+	if err == nil {
+		if k.Email == "" && strings.TrimSpace(email) != "" {
+			_ = d.UpdateKidEmail(k.ID, email)
+			k.Email = email
+		}
+		return k, nil
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		id, _, errCreate := d.CreateKid(name, email, parentID)
+		if errCreate != nil {
+			return nil, errCreate
+		}
+		return d.GetKidByID(id)
+	}
+	return nil, err
+}
+
+func (d *Database) UpdateKidEmail(id int64, email string) error {
+	_, err := d.DB.Exec(`UPDATE kids SET email = ? WHERE id = ?`, email, id)
+	return err
+}
+
+func (d *Database) GetKidByEmail(email string) (*Kid, error) {
+	k := &Kid{}
+	var gridUserNS, gridWalletNS sql.NullString
+	err := d.DB.QueryRow(`SELECT id, uid, parent_id, email, name, balance, hpke_priv_der, hpke_pub_der, grid_user_id, grid_wallet_id FROM kids WHERE email = ?`, email).Scan(&k.ID, &k.UID, &k.ParentID, &k.Email, &k.Name, &k.Balance, &k.HPKEPrivDER, &k.HPKEPubDER, &gridUserNS, &gridWalletNS)
+	if err != nil {
+		return nil, err
+	}
+	if gridUserNS.Valid {
+		k.GridUserID = gridUserNS.String
+	}
+	if gridWalletNS.Valid {
+		k.GridWalletID = gridWalletNS.String
+	}
+	return k, nil
+}
+
+func (d *Database) SetKidHPKEKeys(kidID int64, privDER, pubDER []byte) error {
+	_, err := d.DB.Exec(`UPDATE kids SET hpke_priv_der = ?, hpke_pub_der = ? WHERE id = ?`, privDER, pubDER, kidID)
+	return err
+}
+
+func (d *Database) UpdateKidGridIDs(kidID int64, gridUserID, gridWalletID string) error {
+	_, err := d.DB.Exec(`UPDATE kids SET grid_user_id = ?, grid_wallet_id = ? WHERE id = ?`, gridUserID, gridWalletID, kidID)
+	return err
 }
 
 func (d *Database) GetOrCreateParentByName(name string) (*Parent, error) {
