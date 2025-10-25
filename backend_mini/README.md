@@ -3,8 +3,9 @@ Backend Mini (Go + SQLite)
 Auth: Bearer token required on all requests.
 Token value: SonaBetaTestAPi
 
-Run
-- make run
+Build/Run (Linux-friendly, no CGO)
+- go build ./cmd/server
+- ./server
 
 Endpoints
 - POST /get_parent
