@@ -40,7 +40,7 @@ type ParentKid struct {
 }
 
 func Open(ctx context.Context, path string) (*DB, error) {
-	d, err := sql.Open("sqlite3", path)
+	d, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, err
 	}
