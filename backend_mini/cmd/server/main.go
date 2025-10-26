@@ -37,14 +37,12 @@ func main() {
 	mux.Handle("/get_parent", middleware.RequireBearer("SonaBetaTestAPi", http.HandlerFunc(api.GetParent)))
 	mux.Handle("/get_child", middleware.RequireBearer("SonaBetaTestAPi", http.HandlerFunc(api.GetChild)))
 
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
-	}
+	// wrap with logging middleware
+	handler := middleware.LogRequests(mux)
 
 	srv := &http.Server{
-		Addr:              ":" + port,
-		Handler:           mux,
+		Addr:              "127.0.0.1:33777",
+		Handler:           handler,
 		ReadTimeout:       10 * time.Second,
 		ReadHeaderTimeout: 10 * time.Second,
 		WriteTimeout:      15 * time.Second,
