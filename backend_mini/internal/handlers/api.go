@@ -15,18 +15,18 @@ type API struct {
 func NewAPI(d *db.DB) *API { return &API{db: d} }
 
 type parentRequest struct {
-	Email  string   `json:"email"`
-	Name   *string  `json:"name,omitempty"`
-	Wallet *float64 `json:"wallet,omitempty"`
-	Upd    bool     `json:"upd,omitempty"`
+	Email  string  `json:"email"`
+	Name   *string `json:"name,omitempty"`
+	Wallet *string `json:"wallet,omitempty"`
+	Upd    bool    `json:"upd,omitempty"`
 }
 
 type childRequest struct {
-	Email    string   `json:"email"`
-	Name     *string  `json:"name,omitempty"`
-	ParentID *string  `json:"parent_id,omitempty"`
-	Wallet   *float64 `json:"wallet,omitempty"`
-	Upd      bool     `json:"upd,omitempty"`
+	Email    string  `json:"email"`
+	Name     *string `json:"name,omitempty"`
+	ParentID *string `json:"parent_id,omitempty"`
+	Wallet   *string `json:"wallet,omitempty"`
+	Upd      bool    `json:"upd,omitempty"`
 }
 
 func (a *API) GetParent(w http.ResponseWriter, r *http.Request) {

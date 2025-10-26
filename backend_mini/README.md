@@ -9,14 +9,15 @@ Build/Run (Linux-friendly, no CGO)
 
 Endpoints
 - POST /get_parent
-  - Body: {"email":"e@example.com", "name":"Optional Name", "wallet":123.45, "upd":true}
+  - Body: {"email":"e@example.com", "name":"Optional Name", "wallet":"2vjz4bEwmLo2VMdVv7gwnuvMUsPnWUDSXicVUefRrgTT", "upd":true}
   - Behavior:
     - Returns full parent row by email.
     - If name provided and email not found: creates parent.
     - If email exists and upd=true: updates name and/or wallet if provided.
+    - wallet field accepts Solana wallet address as a string.
 
 - POST /get_child
-  - Body: {"email":"c@example.com", "name":"Optional", "parent_id":"A1B2C3", "wallet":50, "upd":true}
+  - Body: {"email":"c@example.com", "name":"Optional", "parent_id":"A1B2C3", "wallet":"3vjz4bEwmLo2VMdVv7gwnuvMUsPnWUDSXicVUefRrgTT", "upd":true}
   - Behavior:
     - Returns full child row by email.
     - If email not found and both name and parent_id provided: creates child.

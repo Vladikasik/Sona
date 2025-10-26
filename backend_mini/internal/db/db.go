@@ -23,20 +23,20 @@ type Parent struct {
 	Email            string      `json:"email"`
 	KidsList         []ParentKid `json:"kids_list"`
 	RegistrationDate string      `json:"registration_date"`
-	Wallet           float64     `json:"wallet"`
+	Wallet           string      `json:"wallet"`
 }
 
 type Child struct {
-	ID       string  `json:"id"`
-	Name     string  `json:"name"`
-	Email    string  `json:"email"`
-	ParentID string  `json:"parent_id"`
-	Wallet   float64 `json:"wallet"`
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Email    string `json:"email"`
+	ParentID string `json:"parent_id"`
+	Wallet   string `json:"wallet"`
 }
 
 type ParentKid struct {
-	Email  string  `json:"email"`
-	Wallet float64 `json:"wallet"`
+	Email  string `json:"email"`
+	Wallet string `json:"wallet"`
 }
 
 func Open(ctx context.Context, path string) (*DB, error) {
@@ -61,14 +61,14 @@ func (d *DB) Migrate(ctx context.Context) error {
 			email TEXT NOT NULL UNIQUE,
 			kids_list TEXT NOT NULL DEFAULT '[]',
 			registration_date TEXT NOT NULL,
-			wallet REAL NOT NULL DEFAULT 0
+			wallet TEXT NOT NULL DEFAULT ''
 		);`,
 		`CREATE TABLE IF NOT EXISTS children (
 			id TEXT PRIMARY KEY,
 			name TEXT NOT NULL,
 			email TEXT NOT NULL UNIQUE,
 			parent_id TEXT NOT NULL,
-			wallet REAL NOT NULL DEFAULT 0,
+			wallet TEXT NOT NULL DEFAULT '',
 			FOREIGN KEY(parent_id) REFERENCES parents(id) ON UPDATE CASCADE ON DELETE CASCADE
 		);`,
 	}
@@ -124,9 +124,9 @@ func (d *DB) CreateParent(ctx context.Context, name, email string) (*Parent, err
 		if err != nil {
 			return nil, err
 		}
-		_, err = d.SQL.ExecContext(ctx, `INSERT INTO parents (id, name, email, kids_list, registration_date, wallet) VALUES (?, ?, ?, '[]', ?, 0)`, id, name, strings.ToLower(email), now)
+		_, err = d.SQL.ExecContext(ctx, `INSERT INTO parents (id, name, email, kids_list, registration_date, wallet) VALUES (?, ?, ?, '[]', ?, '')`, id, name, strings.ToLower(email), now)
 		if err == nil {
-			return &Parent{ID: id, Name: name, Email: strings.ToLower(email), KidsList: []ParentKid{}, RegistrationDate: now, Wallet: 0}, nil
+			return &Parent{ID: id, Name: name, Email: strings.ToLower(email), KidsList: []ParentKid{}, RegistrationDate: now, Wallet: ""}, nil
 		}
 		// unique collision on id or email -> retry id only when it's id collision; email collision will fail again but caller path should avoid create if exists
 		// continue loop to retry id; if email duplicate, next attempt will still fail and we will return the error after attempts
@@ -134,7 +134,7 @@ func (d *DB) CreateParent(ctx context.Context, name, email string) (*Parent, err
 	return nil, errors.New("failed to generate unique id for parent")
 }
 
-func (d *DB) UpdateParentByEmail(ctx context.Context, email string, name *string, wallet *float64) (*Parent, error) {
+func (d *DB) UpdateParentByEmail(ctx context.Context, email string, name *string, wallet *string) (*Parent, error) {
 	sets := []string{}
 	args := []any{}
 	if name != nil {
@@ -195,9 +195,9 @@ func (d *DB) CreateChild(ctx context.Context, name, email, parentID string) (*Ch
 		if genErr != nil {
 			return nil, genErr
 		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO children (id, name, email, parent_id, wallet) VALUES (?, ?, ?, ?, 0)`, id, name, strings.ToLower(email), parentID)
+		_, err = tx.ExecContext(ctx, `INSERT INTO children (id, name, email, parent_id, wallet) VALUES (?, ?, ?, ?, '')`, id, name, strings.ToLower(email), parentID)
 		if err == nil {
-			child = &Child{ID: id, Name: name, Email: strings.ToLower(email), ParentID: parentID, Wallet: 0}
+			child = &Child{ID: id, Name: name, Email: strings.ToLower(email), ParentID: parentID, Wallet: ""}
 			break
 		}
 	}
@@ -214,7 +214,7 @@ func (d *DB) CreateChild(ctx context.Context, name, email, parentID string) (*Ch
 	return child, nil
 }
 
-func (d *DB) UpdateChildByEmail(ctx context.Context, email string, name *string, parentID *string, wallet *float64) (*Child, error) {
+func (d *DB) UpdateChildByEmail(ctx context.Context, email string, name *string, parentID *string, wallet *string) (*Child, error) {
 	tx, err := d.SQL.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -315,11 +315,11 @@ func (d *DB) GetParentByID(ctx context.Context, id string) (*Parent, bool, error
 	return &p, true, nil
 }
 
-func addChildToParentKidsListTx(ctx context.Context, tx *sql.Tx, parentID, childEmail string, childWallet float64) error {
+func addChildToParentKidsListTx(ctx context.Context, tx *sql.Tx, parentID, childEmail string, childWallet string) error {
 	return upsertChildInParentKidsListTx(ctx, tx, parentID, childEmail, childWallet)
 }
 
-func upsertChildInParentKidsListTx(ctx context.Context, tx *sql.Tx, parentID, childEmail string, childWallet float64) error {
+func upsertChildInParentKidsListTx(ctx context.Context, tx *sql.Tx, parentID, childEmail string, childWallet string) error {
 	row := tx.QueryRowContext(ctx, `SELECT kids_list FROM parents WHERE id=?`, parentID)
 	var kidsRaw string
 	if err := row.Scan(&kidsRaw); err != nil {
