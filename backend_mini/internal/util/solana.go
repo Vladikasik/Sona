@@ -2,6 +2,7 @@ package util
 
 import (
 	"encoding/base64"
+	"encoding/binary"
 	"fmt"
 
 	"github.com/gagliardetto/solana-go"
@@ -36,6 +37,16 @@ type AccountMeta struct {
 	IsWritable bool   `json:"is_writable"`
 	IsPayer    bool   `json:"is_payer"`
 }
+
+type simpleInstruction struct {
+	programID solana.PublicKey
+	accounts  solana.AccountMetaSlice
+	data      []byte
+}
+
+func (s *simpleInstruction) ProgramID() solana.PublicKey { return s.programID }
+func (s *simpleInstruction) Accounts() []*solana.AccountMeta { return s.accounts }
+func (s *simpleInstruction) Data() ([]byte, error) { return s.data, nil }
 
 func BuildEURCTransferTransaction(from, to string, amount uint64) (*TransactionData, error) {
 	fromPubkey, err := solana.PublicKeyFromBase58(from)
@@ -117,8 +128,54 @@ func BuildEURCTransferTransaction(from, to string, amount uint64) (*TransactionD
 		Data: fmt.Sprintf("%x", amount),
 	})
 
+	binaryData := make([]byte, 10)
+	binaryData[0] = 12
+	binary.LittleEndian.PutUint64(binaryData[1:9], amount)
+	binaryData[9] = EURCDecimals
+
+	dummyBlockhash := solana.MustHashFromBase58("11111111111111111111111111111111")
+
+	tx, err := solana.NewTransaction(
+		[]solana.Instruction{
+			&simpleInstruction{
+				programID: ataProgramID,
+				accounts: solana.AccountMetaSlice{
+					{solana.MustPublicKeyFromBase58(fromPubkey.String()), true, true},
+					{solana.MustPublicKeyFromBase58(toATA.String()), false, true},
+					{solana.MustPublicKeyFromBase58(toPubkey.String()), false, false},
+					{solana.MustPublicKeyFromBase58(eurcMint.String()), false, false},
+					{solana.SystemProgramID, false, false},
+					{solana.MustPublicKeyFromBase58(tokenProgramID.String()), false, false},
+				},
+				data: []byte{0},
+			},
+			&simpleInstruction{
+				programID: tokenProgramID,
+				accounts: solana.AccountMetaSlice{
+					{solana.MustPublicKeyFromBase58(fromATA.String()), false, true},
+					{solana.MustPublicKeyFromBase58(eurcMint.String()), false, false},
+					{solana.MustPublicKeyFromBase58(toATA.String()), false, true},
+					{solana.MustPublicKeyFromBase58(fromPubkey.String()), true, false},
+				},
+				data: binaryData,
+			},
+		},
+		dummyBlockhash,
+		solana.TransactionPayer(solana.MustPublicKeyFromBase58(fromPubkey.String())),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create transaction: %w", err)
+	}
+
+	signedTx, err := tx.MarshalBinary()
+	if err != nil {
+		return nil, fmt.Errorf("failed to serialize transaction: %w", err)
+	}
+
 	return &TransactionData{
+		Serialized:         base64.StdEncoding.EncodeToString(signedTx),
 		Instructions:       instructions,
+		RecentBlockhash:    "11111111111111111111111111111111",
 		FeePayer:           fromPubkey.String(),
 		RequiredSignatures: []string{fromPubkey.String()},
 	}, nil
