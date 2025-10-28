@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 
 	"github.com/gagliardetto/solana-go"
@@ -216,8 +217,37 @@ func BuildMerkleTreeTransaction(ownerWallet string, depth uint8, maxBufferSize u
 		Data: fmt.Sprintf("%x%x%x", depth, maxBufferSize, ownerPubkey.Bytes()),
 	}
 
+	// Build serialized transaction with dummy recent blockhash
+	bubblegumProgram := solana.MustPublicKeyFromBase58(BubblegumProgram)
+	var dataBytes []byte
+	if dec, err := hex.DecodeString(instruction.Data); err == nil {
+		dataBytes = dec
+	}
+	tx, err := solana.NewTransaction(
+		[]solana.Instruction{
+			&simpleInstruction{
+				programID: bubblegumProgram,
+				accounts: solana.AccountMetaSlice{
+					{PublicKey: treePubkey, IsSigner: false, IsWritable: true},
+					{PublicKey: ownerPubkey, IsSigner: true, IsWritable: false},
+				},
+				data: dataBytes,
+			},
+		},
+		solana.MustHashFromBase58("11111111111111111111111111111111"),
+		solana.TransactionPayer(ownerPubkey),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create transaction: %w", err)
+	}
+	serialized, err := tx.MarshalBinary()
+	if err != nil {
+		return nil, fmt.Errorf("failed to serialize transaction: %w", err)
+	}
 	return &TransactionData{
+		Serialized:         base64.StdEncoding.EncodeToString(serialized),
 		Instructions:       []InstructionData{instruction},
+		RecentBlockhash:    "11111111111111111111111111111111",
 		FeePayer:           ownerPubkey.String(),
 		RequiredSignatures: []string{ownerPubkey.String()},
 	}, nil
@@ -266,8 +296,35 @@ func BuildMintNFTTransaction(ownerWallet, name, price, description, sendTo, tree
 		Data: fmt.Sprintf("%v", metadata),
 	}
 
+	// Build serialized transaction with dummy recent blockhash
+	dataBytes := []byte(instruction.Data)
+	tx, err := solana.NewTransaction(
+		[]solana.Instruction{
+			&simpleInstruction{
+				programID: bubblegumProgram,
+				accounts: solana.AccountMetaSlice{
+					{PublicKey: treePubkey, IsSigner: false, IsWritable: true},
+					{PublicKey: treeAuthority, IsSigner: false, IsWritable: true},
+					{PublicKey: ownerPubkey, IsSigner: true, IsWritable: false},
+					{PublicKey: sendToPubkey, IsSigner: false, IsWritable: false},
+				},
+				data: dataBytes,
+			},
+		},
+		solana.MustHashFromBase58("11111111111111111111111111111111"),
+		solana.TransactionPayer(ownerPubkey),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create transaction: %w", err)
+	}
+	serialized, err := tx.MarshalBinary()
+	if err != nil {
+		return nil, fmt.Errorf("failed to serialize transaction: %w", err)
+	}
 	return &TransactionData{
+		Serialized:         base64.StdEncoding.EncodeToString(serialized),
 		Instructions:       []InstructionData{instruction},
+		RecentBlockhash:    "11111111111111111111111111111111",
 		FeePayer:           ownerPubkey.String(),
 		RequiredSignatures: []string{ownerPubkey.String()},
 	}, nil
@@ -294,8 +351,34 @@ func BuildUpdateNFTTransaction(nftAddress, newStatus, sendTo string) (*Transacti
 		Data: fmt.Sprintf("status:%s", newStatus),
 	}
 
+	// Build serialized transaction with dummy recent blockhash
+	bubblegumProgram := solana.MustPublicKeyFromBase58(BubblegumProgram)
+	dataBytes := []byte(instruction.Data)
+	tx, err := solana.NewTransaction(
+		[]solana.Instruction{
+			&simpleInstruction{
+				programID: bubblegumProgram,
+				accounts: solana.AccountMetaSlice{
+					{PublicKey: nftPubkey, IsSigner: false, IsWritable: true},
+					{PublicKey: sendToPubkey, IsSigner: false, IsWritable: false},
+				},
+				data: dataBytes,
+			},
+		},
+		solana.MustHashFromBase58("11111111111111111111111111111111"),
+		solana.TransactionPayer(nftPubkey),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create transaction: %w", err)
+	}
+	serialized, err := tx.MarshalBinary()
+	if err != nil {
+		return nil, fmt.Errorf("failed to serialize transaction: %w", err)
+	}
 	return &TransactionData{
+		Serialized:         base64.StdEncoding.EncodeToString(serialized),
 		Instructions:       []InstructionData{instruction},
+		RecentBlockhash:    "11111111111111111111111111111111",
 		FeePayer:           nftPubkey.String(),
 		RequiredSignatures: []string{nftPubkey.String()},
 	}, nil
@@ -330,8 +413,40 @@ func BuildAcceptNFTTransaction(nftAddress, senderWallet string, paymentAmount ui
 		Data: fmt.Sprintf("%x", paymentAmount),
 	}
 
+	// Build serialized transaction with dummy recent blockhash
+	bubblegumProgram := solana.MustPublicKeyFromBase58(BubblegumProgram)
+	tokenProgram := solana.MustPublicKeyFromBase58(TokenProgram)
+	tx, err := solana.NewTransaction(
+		[]solana.Instruction{
+			&simpleInstruction{
+				programID: bubblegumProgram,
+				accounts: solana.AccountMetaSlice{
+					{PublicKey: nftPubkey, IsSigner: false, IsWritable: true},
+				},
+				data: []byte(burnInstruction.Data),
+			},
+			&simpleInstruction{
+				programID: tokenProgram,
+				accounts: solana.AccountMetaSlice{
+					{PublicKey: senderPubkey, IsSigner: false, IsWritable: true},
+				},
+				data: []byte(transferInstruction.Data),
+			},
+		},
+		solana.MustHashFromBase58("11111111111111111111111111111111"),
+		solana.TransactionPayer(nftPubkey),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create transaction: %w", err)
+	}
+	serialized, err := tx.MarshalBinary()
+	if err != nil {
+		return nil, fmt.Errorf("failed to serialize transaction: %w", err)
+	}
 	return &TransactionData{
+		Serialized:         base64.StdEncoding.EncodeToString(serialized),
 		Instructions:       []InstructionData{burnInstruction, transferInstruction},
+		RecentBlockhash:    "11111111111111111111111111111111",
 		FeePayer:           nftPubkey.String(),
 		RequiredSignatures: []string{nftPubkey.String()},
 	}, nil
