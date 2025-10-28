@@ -44,9 +44,9 @@ type simpleInstruction struct {
 	data      []byte
 }
 
-func (s *simpleInstruction) ProgramID() solana.PublicKey { return s.programID }
+func (s *simpleInstruction) ProgramID() solana.PublicKey     { return s.programID }
 func (s *simpleInstruction) Accounts() []*solana.AccountMeta { return s.accounts }
-func (s *simpleInstruction) Data() ([]byte, error) { return s.data, nil }
+func (s *simpleInstruction) Data() ([]byte, error)           { return s.data, nil }
 
 func BuildEURCTransferTransaction(from, to string, amount uint64) (*TransactionData, error) {
 	fromPubkey, err := solana.PublicKeyFromBase58(from)
@@ -98,23 +98,9 @@ func BuildEURCTransferTransaction(from, to string, amount uint64) (*TransactionD
 		return nil, fmt.Errorf("failed to derive to ATA: %w", err)
 	}
 
-	systemProgramID := solana.SystemProgramID
+	// systemProgramID := solana.SystemProgramID
 
 	var instructions []InstructionData
-
-	instructions = append(instructions, InstructionData{
-		ProgramID:       AssociatedTokenProgram,
-		InstructionType: "create_associated_token_account",
-		Accounts: []AccountMeta{
-			{Pubkey: fromPubkey.String(), IsSigner: true, IsWritable: true, IsPayer: true},
-			{Pubkey: toATA.String(), IsSigner: false, IsWritable: true, IsPayer: false},
-			{Pubkey: toPubkey.String(), IsSigner: false, IsWritable: false, IsPayer: false},
-			{Pubkey: eurcMint.String(), IsSigner: false, IsWritable: false, IsPayer: false},
-			{Pubkey: systemProgramID.String(), IsSigner: false, IsWritable: false, IsPayer: false},
-			{Pubkey: tokenProgramID.String(), IsSigner: false, IsWritable: false, IsPayer: false},
-		},
-		Data: "",
-	})
 
 	instructions = append(instructions, InstructionData{
 		ProgramID:       TokenProgram,
@@ -138,24 +124,12 @@ func BuildEURCTransferTransaction(from, to string, amount uint64) (*TransactionD
 	tx, err := solana.NewTransaction(
 		[]solana.Instruction{
 			&simpleInstruction{
-				programID: ataProgramID,
-				accounts: solana.AccountMetaSlice{
-					{solana.MustPublicKeyFromBase58(fromPubkey.String()), true, true},
-					{solana.MustPublicKeyFromBase58(toATA.String()), false, true},
-					{solana.MustPublicKeyFromBase58(toPubkey.String()), false, false},
-					{solana.MustPublicKeyFromBase58(eurcMint.String()), false, false},
-					{solana.SystemProgramID, false, false},
-					{solana.MustPublicKeyFromBase58(tokenProgramID.String()), false, false},
-				},
-				data: []byte{0},
-			},
-			&simpleInstruction{
 				programID: tokenProgramID,
 				accounts: solana.AccountMetaSlice{
-					{solana.MustPublicKeyFromBase58(fromATA.String()), false, true},
-					{solana.MustPublicKeyFromBase58(eurcMint.String()), false, false},
-					{solana.MustPublicKeyFromBase58(toATA.String()), false, true},
-					{solana.MustPublicKeyFromBase58(fromPubkey.String()), true, false},
+					{PublicKey: solana.MustPublicKeyFromBase58(fromATA.String()), IsSigner: false, IsWritable: true},
+					{PublicKey: solana.MustPublicKeyFromBase58(eurcMint.String()), IsSigner: false, IsWritable: false},
+					{PublicKey: solana.MustPublicKeyFromBase58(toATA.String()), IsSigner: false, IsWritable: true},
+					{PublicKey: solana.MustPublicKeyFromBase58(fromPubkey.String()), IsSigner: true, IsWritable: false},
 				},
 				data: binaryData,
 			},
