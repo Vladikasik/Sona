@@ -24,22 +24,62 @@ Endpoints
     - If email not found and missing name or parent_id: 400 with message "for user creation you need all: email, name, parent_id".
     - If email exists and upd=true: updates name and/or parent_id and/or wallet if provided.
 
+- POST /eurc_tx
+  - Body: {"wallet_from":"Fz..." , "wallet_to":"ABC...", "amount":"1000000"}
+  - Behavior: Constructs EURC token transfer transaction with `transfer_checked` instruction
+  - Creates recipient ATA if it doesn't exist (compatible with wallets that have no EURC balance)
+  - Compatible with MPC wallets - transaction is signed on device
+  - Returns: Unserialized transaction data for client-side signing
+
+- POST /generate_merkletree
+  - Body: {"owner_wallet":"Fz..."}
+  - Behavior: Constructs merkle tree generation transaction (depth 15, max buffer size 64)
+  - Returns: Unserialized transaction data for client-side signing
+
+- POST /mint_nft
+  - Body: {"owner_wallet":"Fz...", "name":"Chore #1", "price":"100", "description":"Task", "send_to":"ABC...", "tree_id":"9GgFXzL5H6Yai7A2TNaEdU5cNqAvZM3Hpw3fQcqGGpAx"}
+  - Behavior: Constructs compressed NFT mint transaction using Bubblegum program
+  - Requires tree_id parameter for the merkle tree to mint into
+  - Returns: Unserialized transaction data for client-side signing
+
+- POST /upd_nft
+  - Body: {"nft_address":"XYZ...", "new_status":"completed", "send_to":"ABC..."}
+  - Behavior: Constructs NFT metadata update transaction + transfers NFT to recipient
+  - Returns: Unserialized transaction data for client-side signing
+
+- POST /accept_nft
+  - Body: {"nft_address":"XYZ...", "sender_wallet":"ABC...", "payment_amount":"1000000"}
+  - Behavior: Constructs transaction to burn NFT and pay sender with EURC
+  - Returns: Unserialized transaction data for client-side signing
+
 Notes
 - parent_id in children is the parent's 6-character id.
 - parents.kids_list is a JSON array of child ids and is kept in sync.
+- All Light Protocol endpoints return unserialized transaction data.
+- Transactions must be signed and serialized on device before submission.
 
 Auth Header
 - Authorization: Bearer SonaBetaTestAPi
 
 Examples
-curl -X POST http://localhost:8080/get_parent \
+curl -X POST http://localhost:33777/get_parent \
   -H "Authorization: Bearer SonaBetaTestAPi" \
   -H "Content-Type: application/json" \
   -d '{"email":"p@example.com","name":"Parent One"}'
 
-curl -X POST http://localhost:8080/get_child \
+curl -X POST http://localhost:33777/get_child \
   -H "Authorization: Bearer SonaBetaTestAPi" \
   -H "Content-Type: application/json" \
   -d '{"email":"c@example.com","name":"Child One","parent_id":"A1B2C3"}'
+
+curl -X POST http://localhost:33777/eurc_tx \
+  -H "Authorization: Bearer SonaBetaTestAPi" \
+  -H "Content-Type: application/json" \
+  -d '{"wallet_from":"Fz...","wallet_to":"ABC...","amount":"1000000"}'
+
+curl -X POST http://localhost:33777/mint_nft \
+  -H "Authorization: Bearer SonaBetaTestAPi" \
+  -H "Content-Type: application/json" \
+  -d '{"owner_wallet":"Fz...","name":"Chore #1","price":"100","description":"Task","send_to":"ABC...","tree_id":"9GgFXzL5H6Yai7A2TNaEdU5cNqAvZM3Hpw3fQcqGGpAx"}'
 
 
