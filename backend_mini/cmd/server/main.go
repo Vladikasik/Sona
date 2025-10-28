@@ -7,6 +7,7 @@ import (
 	"os"
 	"time"
 
+	"backend_mini/internal/config"
 	"backend_mini/internal/db"
 	"backend_mini/internal/handlers"
 	"backend_mini/internal/middleware"
@@ -14,6 +15,11 @@ import (
 
 func main() {
 	ctx := context.Background()
+
+	if err := config.LoadServerWallet(); err != nil {
+		log.Fatalf("failed to load server wallet: %v", err)
+	}
+	log.Println("✓ Server wallet loaded")
 
 	dataDir := "data"
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {

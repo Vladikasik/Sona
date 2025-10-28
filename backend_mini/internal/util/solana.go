@@ -501,10 +501,76 @@ func DeriveAssociatedTokenAddress(owner solana.PublicKey, mint solana.PublicKey)
 }
 
 func DeriveTreeAuthority(treeID solana.PublicKey, programID solana.PublicKey) solana.PublicKey {
-	treeBytes := treeID.Bytes()
-	programBytes := programID.Bytes()
+	treeAuthority, _, err := solana.FindProgramAddress(
+		[][]byte{treeID.Bytes()},
+		programID,
+	)
+	if err != nil {
+		panic(fmt.Sprintf("failed to derive tree authority: %v", err))
+	}
+	return treeAuthority
+}
 
-	combined := append(treeBytes, programBytes...)
+func CreateAndSubmitMerkleTree(client *rpc.Client, serverWallet *solana.PrivateKey, authorityWallet solana.PublicKey) (solana.PublicKey, string, error) {
+	treeKeypair := solana.NewWallet()
+	treePubkey := treeKeypair.PublicKey()
 
-	return solana.PublicKeyFromBytes(combined)
+	var spaceBytes uint64 = TreeSpaceBytes
+	var rentLamports uint64 = TreeRentLamports
+
+	cac := system.NewCreateAccountInstruction(
+		rentLamports,
+		spaceBytes,
+		solana.MustPublicKeyFromBase58(SPLAccountCompression),
+		serverWallet.PublicKey(),
+		treePubkey,
+	).Build()
+
+	data := make([]byte, 13)
+	data[0] = 0
+	binary.LittleEndian.PutUint32(data[1:5], uint32(MaxDepth))
+	binary.LittleEndian.PutUint32(data[5:9], uint32(MaxBufferSize))
+	binary.LittleEndian.PutUint32(data[9:13], uint32(CanopyDepth))
+
+	initIx := &simpleInstruction{
+		programID: solana.MustPublicKeyFromBase58(SPLAccountCompression),
+		accounts: solana.AccountMetaSlice{
+			{PublicKey: serverWallet.PublicKey(), IsSigner: true, IsWritable: true},
+			{PublicKey: treePubkey, IsSigner: false, IsWritable: true},
+			{PublicKey: solana.MustPublicKeyFromBase58(SPLNoopProgram), IsSigner: false, IsWritable: false},
+			{PublicKey: solana.SystemProgramID, IsSigner: false, IsWritable: false},
+		},
+		data: data,
+	}
+
+	recent, err := client.GetRecentBlockhash(context.Background(), rpc.CommitmentFinalized)
+	if err != nil {
+		return solana.PublicKey{}, "", fmt.Errorf("failed to get recent blockhash: %w", err)
+	}
+
+	tx, err := solana.NewTransaction(
+		[]solana.Instruction{cac, initIx},
+		recent.Value.Blockhash,
+		solana.TransactionPayer(serverWallet.PublicKey()),
+	)
+	if err != nil {
+		return solana.PublicKey{}, "", fmt.Errorf("failed to create transaction: %w", err)
+	}
+
+	tx.Sign(func(key solana.PublicKey) *solana.PrivateKey {
+		if key.Equals(serverWallet.PublicKey()) {
+			return serverWallet
+		}
+		if key.Equals(treePubkey) {
+			return &treeKeypair.PrivateKey
+		}
+		return nil
+	})
+
+	sig, err := client.SendTransaction(context.Background(), tx)
+	if err != nil {
+		return solana.PublicKey{}, "", fmt.Errorf("failed to send transaction: %w", err)
+	}
+
+	return treePubkey, sig.String(), nil
 }

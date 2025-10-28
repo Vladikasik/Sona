@@ -6,8 +6,12 @@ import (
 	"strconv"
 	"strings"
 
+	"backend_mini/internal/config"
 	"backend_mini/internal/db"
 	"backend_mini/internal/util"
+
+	"github.com/gagliardetto/solana-go"
+	"github.com/gagliardetto/solana-go/rpc"
 )
 
 type API struct {
@@ -191,14 +195,38 @@ func (a *API) GenerateMerkleTree(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "owner_wallet is required")
 		return
 	}
-	depth := uint8(15)
-	maxBufferSize := uint8(64)
-	txData, err := util.BuildMerkleTreeTransaction(req.OwnerWallet, depth, maxBufferSize)
+
+	authorityPubkey, err := solana.PublicKeyFromBase58(req.OwnerWallet)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeError(w, http.StatusBadRequest, "invalid owner_wallet")
 		return
 	}
-	writeJSON(w, http.StatusOK, txData)
+
+	serverWallet, err := config.GetServerWallet()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "server wallet not configured")
+		return
+	}
+
+	client := rpc.New("https://api.devnet.solana.com")
+	treePubkey, signature, err := util.CreateAndSubmitMerkleTree(client, serverWallet, authorityPubkey)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	bubblegumProgram := solana.MustPublicKeyFromBase58(util.BubblegumProgram)
+	treeAuthority := util.DeriveTreeAuthority(treePubkey, bubblegumProgram)
+
+	response := map[string]interface{}{
+		"tree_id":        treePubkey.String(),
+		"tree_authority": treeAuthority.String(),
+		"authority":      authorityPubkey.String(),
+		"signature":      signature,
+		"message":        "Merkle tree created successfully",
+	}
+
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (a *API) MintNFT(w http.ResponseWriter, r *http.Request) {
