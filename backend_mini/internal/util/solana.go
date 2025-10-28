@@ -4,10 +4,10 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/binary"
-	"encoding/hex"
 	"fmt"
 
 	"github.com/gagliardetto/solana-go"
+	"github.com/gagliardetto/solana-go/programs/system"
 	"github.com/gagliardetto/solana-go/rpc"
 )
 
@@ -17,6 +17,8 @@ const (
 	TokenProgram           = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 	AssociatedTokenProgram = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
 	BubblegumProgram       = "BGUMAp9Gq7iTEuizy4pqaxsTyUCbc68BEFgBMRrLFVo"
+	SPLAccountCompression  = "cmtDvXumGCrqC1Age74AVPhSRVXJMd8PJS91L8KbNCK"
+	SPLNoopProgram         = "noopb9bkMVfRPU8AsbpTUg8AQkHtKwMYZiFUjNRtMmV"
 )
 
 type TransactionData struct {
@@ -207,33 +209,56 @@ func BuildMerkleTreeTransaction(ownerWallet string, depth uint8, maxBufferSize u
 
 	treePubkey := solana.NewWallet().PublicKey()
 
+	// compute space/lamports must be done by caller; for now require caller to pass via RPC elsewhere
+	// placeholder minimal space from depth/buffer (caller should replace with exact)
+	spaceBytes := uint64(0)
+	rentLamports := uint64(0)
+	if spaceBytes == 0 || rentLamports == 0 {
+		return nil, fmt.Errorf("merkle tree space/rent must be precomputed")
+	}
+
+	// instruction metadata to return
 	instruction := InstructionData{
-		ProgramID:       BubblegumProgram,
-		InstructionType: "init_empty_merkle_tree",
+		ProgramID:       SPLAccountCompression,
+		InstructionType: "create_tree",
 		Accounts: []AccountMeta{
+			{Pubkey: ownerPubkey.String(), IsSigner: true, IsWritable: true, IsPayer: true},
 			{Pubkey: treePubkey.String(), IsSigner: false, IsWritable: true, IsPayer: false},
-			{Pubkey: ownerPubkey.String(), IsSigner: true, IsWritable: false, IsPayer: true},
+			{Pubkey: SPLNoopProgram, IsSigner: false, IsWritable: false, IsPayer: false},
+			{Pubkey: solana.SystemProgramID.String(), IsSigner: false, IsWritable: false, IsPayer: false},
 		},
-		Data: fmt.Sprintf("%x%x%x", depth, maxBufferSize, ownerPubkey.Bytes()),
+		Data: fmt.Sprintf("%x%x%x", uint32(depth), uint32(maxBufferSize), uint32(0)),
 	}
 
 	// Build serialized transaction with dummy recent blockhash
-	bubblegumProgram := solana.MustPublicKeyFromBase58(BubblegumProgram)
-	var dataBytes []byte
-	if dec, err := hex.DecodeString(instruction.Data); err == nil {
-		dataBytes = dec
-	}
-	tx, err := solana.NewTransaction(
-		[]solana.Instruction{
-			&simpleInstruction{
-				programID: bubblegumProgram,
-				accounts: solana.AccountMetaSlice{
-					{PublicKey: treePubkey, IsSigner: false, IsWritable: true},
-					{PublicKey: ownerPubkey, IsSigner: true, IsWritable: false},
-				},
-				data: dataBytes,
-			},
+	// build createAccount ix
+	cac := system.NewCreateAccountInstruction(
+		rentLamports,
+		spaceBytes,
+		solana.MustPublicKeyFromBase58(SPLAccountCompression),
+		ownerPubkey,
+		treePubkey,
+	).Build()
+
+	// build create_tree (init) ix
+	data := make([]byte, 13)
+	data[0] = 0 // discriminator
+	binary.LittleEndian.PutUint32(data[1:5], uint32(depth))
+	binary.LittleEndian.PutUint32(data[5:9], uint32(maxBufferSize))
+	binary.LittleEndian.PutUint32(data[9:13], uint32(0)) // canopy
+	initIx := &simpleInstruction{
+		programID: solana.MustPublicKeyFromBase58(SPLAccountCompression),
+		accounts: solana.AccountMetaSlice{
+			{PublicKey: ownerPubkey, IsSigner: true, IsWritable: true},
+			{PublicKey: treePubkey, IsSigner: false, IsWritable: true},
+			{PublicKey: solana.MustPublicKeyFromBase58(SPLNoopProgram), IsSigner: false, IsWritable: false},
+			{PublicKey: solana.SystemProgramID, IsSigner: false, IsWritable: false},
 		},
+		data: data,
+	}
+
+	tx, err := solana.NewTransaction(
+		[]solana.Instruction{cac, initIx},
 		solana.MustHashFromBase58("11111111111111111111111111111111"),
 		solana.TransactionPayer(ownerPubkey),
 	)
