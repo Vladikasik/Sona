@@ -23,7 +23,7 @@ This API manages time limits for apps on kids' devices, allowing parents to set 
 - `parent_email` (string, required): Email of the parent setting the limit
 - `kid_email` (string, required): Email of the child whose usage is being limited
 - `app` (string, required): Bundle identifier or name of the app to limit
-- `time_per_day` (integer, required): Daily time limit in minutes (must be > 0)
+- `time_per_day` (integer, required): Daily time limit in minutes (0 = completely blocked, > 0 = allowed time in minutes)
 - `fee_extra_hour` (string, required): Fee in EURC micro-units to extend limit by 1 hour
 
 **Response:**
@@ -40,6 +40,18 @@ This API manages time limits for apps on kids' devices, allowing parents to set 
 ```
 
 **Note:** If a limit already exists for the same parent-child-app combination, it will be updated with the new values. The `created_at` timestamp remains unchanged on updates.
+
+**Example - Complete Block:**
+To completely block an app, set `time_per_day` to 0:
+```json
+{
+  "parent_email": "parent@example.com",
+  "kid_email": "kid@example.com",
+  "app": "com.distracting.app",
+  "time_per_day": 0,
+  "fee_extra_hour": "5000000"
+}
+```
 
 ## Get Limits
 

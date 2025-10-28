@@ -413,8 +413,8 @@ func (a *API) SetLimit(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "parent_email, kid_email, and app are required")
 		return
 	}
-	if req.TimePerDay <= 0 {
-		writeError(w, http.StatusBadRequest, "time_per_day must be greater than 0")
+	if req.TimePerDay < 0 {
+		writeError(w, http.StatusBadRequest, "time_per_day cannot be negative")
 		return
 	}
 	feeExtraHour, err := strconv.ParseUint(req.FeeExtraHour, 10, 64)
