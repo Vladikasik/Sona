@@ -81,6 +81,18 @@ type getChoresRequest struct {
 	Wallet string `json:"wallet"`
 }
 
+type setLimitRequest struct {
+	ParentEmail  string `json:"parent_email"`
+	KidEmail     string `json:"kid_email"`
+	App          string `json:"app"`
+	TimePerDay   int    `json:"time_per_day"`
+	FeeExtraHour string `json:"fee_extra_hour"`
+}
+
+type getLimitsRequest struct {
+	KidEmail string `json:"kid_email"`
+}
+
 func (a *API) GetParent(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -385,6 +397,61 @@ func (a *API) GetChores(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, chores)
+}
+
+func (a *API) SetLimit(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	var req setLimitRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if strings.TrimSpace(req.ParentEmail) == "" || strings.TrimSpace(req.KidEmail) == "" || strings.TrimSpace(req.App) == "" {
+		writeError(w, http.StatusBadRequest, "parent_email, kid_email, and app are required")
+		return
+	}
+	if req.TimePerDay <= 0 {
+		writeError(w, http.StatusBadRequest, "time_per_day must be greater than 0")
+		return
+	}
+	feeExtraHour, err := strconv.ParseUint(req.FeeExtraHour, 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid fee_extra_hour")
+		return
+	}
+	ctx := r.Context()
+	limit, err := a.db.CreateOrUpdateAppLimit(ctx, req.ParentEmail, req.KidEmail, req.App, req.TimePerDay, feeExtraHour)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, limit)
+}
+
+func (a *API) GetLimits(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	var req getLimitsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if strings.TrimSpace(req.KidEmail) == "" {
+		writeError(w, http.StatusBadRequest, "kid_email is required")
+		return
+	}
+	ctx := r.Context()
+	limits, err := a.db.GetAppLimitsByKidEmail(ctx, req.KidEmail)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, limits)
 }
 
 func writeError(w http.ResponseWriter, status int, msg string) {

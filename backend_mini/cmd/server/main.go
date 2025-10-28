@@ -50,6 +50,8 @@ func main() {
 	mux.Handle("/create_chore", middleware.RequireBearer("SonaBetaTestAPi", http.HandlerFunc(api.CreateChore)))
 	mux.Handle("/update_chore", middleware.RequireBearer("SonaBetaTestAPi", http.HandlerFunc(api.UpdateChore)))
 	mux.Handle("/get_chores", middleware.RequireBearer("SonaBetaTestAPi", http.HandlerFunc(api.GetChores)))
+	mux.Handle("/set_limit", middleware.RequireBearer("SonaBetaTestAPi", http.HandlerFunc(api.SetLimit)))
+	mux.Handle("/get_limits", middleware.RequireBearer("SonaBetaTestAPi", http.HandlerFunc(api.GetLimits)))
 
 	// wrap with logging middleware
 	handler := middleware.LogRequests(mux)

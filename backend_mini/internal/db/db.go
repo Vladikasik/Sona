@@ -49,6 +49,16 @@ type Chore struct {
 	ChoreStatus      int    `json:"chore_status"`
 }
 
+type AppLimit struct {
+	LimitID      string `json:"limit_id"`
+	ParentEmail  string `json:"parent_email"`
+	KidEmail     string `json:"kid_email"`
+	App          string `json:"app"`
+	TimePerDay   int    `json:"time_per_day"`
+	FeeExtraHour uint64 `json:"fee_extra_hour"`
+	CreatedAt    string `json:"created_at"`
+}
+
 func Open(ctx context.Context, path string) (*DB, error) {
 	d, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -89,6 +99,16 @@ func (d *DB) Migrate(ctx context.Context) error {
 			chore_description TEXT NOT NULL,
 			bounty_amount INTEGER NOT NULL,
 			chore_status INTEGER NOT NULL DEFAULT 0
+		);`,
+		`CREATE TABLE IF NOT EXISTS app_limits (
+			limit_id TEXT PRIMARY KEY,
+			parent_email TEXT NOT NULL,
+			kid_email TEXT NOT NULL,
+			app TEXT NOT NULL,
+			time_per_day INTEGER NOT NULL,
+			fee_extra_hour INTEGER NOT NULL,
+			created_at TEXT NOT NULL,
+			UNIQUE(parent_email, kid_email, app)
 		);`,
 	}
 	for _, s := range stmts {
@@ -449,4 +469,64 @@ func (d *DB) GetChores(ctx context.Context, wallet string) ([]Chore, error) {
 		return nil, err
 	}
 	return chores, nil
+}
+
+func (d *DB) CreateOrUpdateAppLimit(ctx context.Context, parentEmail, kidEmail, app string, timePerDay int, feeExtraHour uint64) (*AppLimit, error) {
+	limitID, err := util.GenerateShortID()
+	if err != nil {
+		return nil, err
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	_, err = d.SQL.ExecContext(ctx, `
+		INSERT INTO app_limits (limit_id, parent_email, kid_email, app, time_per_day, fee_extra_hour, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(parent_email, kid_email, app) DO UPDATE SET
+			time_per_day = excluded.time_per_day,
+			fee_extra_hour = excluded.fee_extra_hour
+	`, limitID, strings.ToLower(parentEmail), strings.ToLower(kidEmail), app, timePerDay, feeExtraHour, now)
+
+	if err != nil {
+		return nil, err
+	}
+
+	row := d.SQL.QueryRowContext(ctx, `
+		SELECT limit_id, parent_email, kid_email, app, time_per_day, fee_extra_hour, created_at
+		FROM app_limits 
+		WHERE parent_email=? AND kid_email=? AND app=?
+	`, strings.ToLower(parentEmail), strings.ToLower(kidEmail), app)
+
+	var limit AppLimit
+	if err := row.Scan(&limit.LimitID, &limit.ParentEmail, &limit.KidEmail, &limit.App, &limit.TimePerDay, &limit.FeeExtraHour, &limit.CreatedAt); err != nil {
+		return nil, err
+	}
+
+	return &limit, nil
+}
+
+func (d *DB) GetAppLimitsByKidEmail(ctx context.Context, kidEmail string) ([]AppLimit, error) {
+	rows, err := d.SQL.QueryContext(ctx, `
+		SELECT limit_id, parent_email, kid_email, app, time_per_day, fee_extra_hour, created_at
+		FROM app_limits 
+		WHERE kid_email=?
+		ORDER BY created_at DESC
+	`, strings.ToLower(kidEmail))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var limits []AppLimit
+	for rows.Next() {
+		var limit AppLimit
+		if err := rows.Scan(&limit.LimitID, &limit.ParentEmail, &limit.KidEmail, &limit.App, &limit.TimePerDay, &limit.FeeExtraHour, &limit.CreatedAt); err != nil {
+			return nil, err
+		}
+		limits = append(limits, limit)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return limits, nil
 }
