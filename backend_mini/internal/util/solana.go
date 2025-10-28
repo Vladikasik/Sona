@@ -1,11 +1,13 @@
 package util
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/binary"
 	"fmt"
 
 	"github.com/gagliardetto/solana-go"
+	"github.com/gagliardetto/solana-go/rpc"
 )
 
 const (
@@ -102,6 +104,32 @@ func BuildEURCTransferTransaction(from, to string, amount uint64) (*TransactionD
 
 	var instructions []InstructionData
 
+	// Optionally include ATA creation if missing (safe to omit if already exists)
+	includeCreateATA := false
+	{
+		client := rpc.New("https://api.devnet.solana.com")
+		info, err := client.GetAccountInfoWithOpts(context.Background(), toATA, &rpc.GetAccountInfoOpts{Commitment: rpc.CommitmentConfirmed})
+		if err != nil || info == nil || info.Value == nil {
+			includeCreateATA = true
+		}
+	}
+
+	if includeCreateATA {
+		instructions = append(instructions, InstructionData{
+			ProgramID:       AssociatedTokenProgram,
+			InstructionType: "create_associated_token_account_idempotent",
+			Accounts: []AccountMeta{
+				{Pubkey: fromPubkey.String(), IsSigner: true, IsWritable: true, IsPayer: true},
+				{Pubkey: toATA.String(), IsSigner: false, IsWritable: true, IsPayer: false},
+				{Pubkey: toPubkey.String(), IsSigner: false, IsWritable: false, IsPayer: false},
+				{Pubkey: eurcMint.String(), IsSigner: false, IsWritable: false, IsPayer: false},
+				{Pubkey: solana.SystemProgramID.String(), IsSigner: false, IsWritable: false, IsPayer: false},
+				{Pubkey: tokenProgramID.String(), IsSigner: false, IsWritable: false, IsPayer: false},
+			},
+			Data: "",
+		})
+	}
+
 	instructions = append(instructions, InstructionData{
 		ProgramID:       TokenProgram,
 		InstructionType: "transfer_checked",
@@ -121,19 +149,34 @@ func BuildEURCTransferTransaction(from, to string, amount uint64) (*TransactionD
 
 	dummyBlockhash := solana.MustHashFromBase58("11111111111111111111111111111111")
 
-	tx, err := solana.NewTransaction(
-		[]solana.Instruction{
-			&simpleInstruction{
-				programID: tokenProgramID,
-				accounts: solana.AccountMetaSlice{
-					{PublicKey: solana.MustPublicKeyFromBase58(fromATA.String()), IsSigner: false, IsWritable: true},
-					{PublicKey: solana.MustPublicKeyFromBase58(eurcMint.String()), IsSigner: false, IsWritable: false},
-					{PublicKey: solana.MustPublicKeyFromBase58(toATA.String()), IsSigner: false, IsWritable: true},
-					{PublicKey: solana.MustPublicKeyFromBase58(fromPubkey.String()), IsSigner: true, IsWritable: false},
-				},
-				data: binaryData,
+	var txInstructions []solana.Instruction
+	if includeCreateATA {
+		txInstructions = append(txInstructions, &simpleInstruction{
+			programID: ataProgramID,
+			accounts: solana.AccountMetaSlice{
+				{PublicKey: solana.MustPublicKeyFromBase58(fromPubkey.String()), IsSigner: true, IsWritable: true},
+				{PublicKey: solana.MustPublicKeyFromBase58(toATA.String()), IsSigner: false, IsWritable: true},
+				{PublicKey: solana.MustPublicKeyFromBase58(toPubkey.String()), IsSigner: false, IsWritable: false},
+				{PublicKey: solana.MustPublicKeyFromBase58(eurcMint.String()), IsSigner: false, IsWritable: false},
+				{PublicKey: solana.SystemProgramID, IsSigner: false, IsWritable: false},
+				{PublicKey: solana.MustPublicKeyFromBase58(tokenProgramID.String()), IsSigner: false, IsWritable: false},
 			},
+			data: []byte{1}, // CreateIdempotent discriminator
+		})
+	}
+	txInstructions = append(txInstructions, &simpleInstruction{
+		programID: tokenProgramID,
+		accounts: solana.AccountMetaSlice{
+			{PublicKey: solana.MustPublicKeyFromBase58(fromATA.String()), IsSigner: false, IsWritable: true},
+			{PublicKey: solana.MustPublicKeyFromBase58(eurcMint.String()), IsSigner: false, IsWritable: false},
+			{PublicKey: solana.MustPublicKeyFromBase58(toATA.String()), IsSigner: false, IsWritable: true},
+			{PublicKey: solana.MustPublicKeyFromBase58(fromPubkey.String()), IsSigner: true, IsWritable: false},
 		},
+		data: binaryData,
+	})
+
+	tx, err := solana.NewTransaction(
+		txInstructions,
 		dummyBlockhash,
 		solana.TransactionPayer(solana.MustPublicKeyFromBase58(fromPubkey.String())),
 	)
