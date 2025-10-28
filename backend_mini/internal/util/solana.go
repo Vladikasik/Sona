@@ -19,6 +19,12 @@ const (
 	BubblegumProgram       = "BGUMAp9Gq7iTEuizy4pqaxsTyUCbc68BEFgBMRrLFVo"
 	SPLAccountCompression  = "cmtDvXumGCrqC1Age74AVPhSRVXJMd8PJS91L8KbNCK"
 	SPLNoopProgram         = "noopb9bkMVfRPU8AsbpTUg8AQkHtKwMYZiFUjNRtMmV"
+
+	MaxDepth         uint8  = 14
+	MaxBufferSize    uint8  = 64
+	CanopyDepth      uint8  = 0
+	TreeSpaceBytes   uint64 = 3364864
+	TreeRentLamports uint64 = 6000000
 )
 
 type TransactionData struct {
@@ -209,13 +215,8 @@ func BuildMerkleTreeTransaction(ownerWallet string, depth uint8, maxBufferSize u
 
 	treePubkey := solana.NewWallet().PublicKey()
 
-	// compute space/lamports must be done by caller; for now require caller to pass via RPC elsewhere
-	// placeholder minimal space from depth/buffer (caller should replace with exact)
-	spaceBytes := uint64(0)
-	rentLamports := uint64(0)
-	if spaceBytes == 0 || rentLamports == 0 {
-		return nil, fmt.Errorf("merkle tree space/rent must be precomputed")
-	}
+	var spaceBytes uint64 = TreeSpaceBytes
+	var rentLamports uint64 = TreeRentLamports
 
 	// instruction metadata to return
 	instruction := InstructionData{
@@ -227,7 +228,7 @@ func BuildMerkleTreeTransaction(ownerWallet string, depth uint8, maxBufferSize u
 			{Pubkey: SPLNoopProgram, IsSigner: false, IsWritable: false, IsPayer: false},
 			{Pubkey: solana.SystemProgramID.String(), IsSigner: false, IsWritable: false, IsPayer: false},
 		},
-		Data: fmt.Sprintf("%x%x%x", uint32(depth), uint32(maxBufferSize), uint32(0)),
+		Data: fmt.Sprintf("%x%x%x", uint32(MaxDepth), uint32(MaxBufferSize), uint32(CanopyDepth)),
 	}
 
 	// Build serialized transaction with dummy recent blockhash
@@ -243,9 +244,9 @@ func BuildMerkleTreeTransaction(ownerWallet string, depth uint8, maxBufferSize u
 	// build create_tree (init) ix
 	data := make([]byte, 13)
 	data[0] = 0 // discriminator
-	binary.LittleEndian.PutUint32(data[1:5], uint32(depth))
-	binary.LittleEndian.PutUint32(data[5:9], uint32(maxBufferSize))
-	binary.LittleEndian.PutUint32(data[9:13], uint32(0)) // canopy
+	binary.LittleEndian.PutUint32(data[1:5], uint32(MaxDepth))
+	binary.LittleEndian.PutUint32(data[5:9], uint32(MaxBufferSize))
+	binary.LittleEndian.PutUint32(data[9:13], uint32(CanopyDepth))
 	initIx := &simpleInstruction{
 		programID: solana.MustPublicKeyFromBase58(SPLAccountCompression),
 		accounts: solana.AccountMetaSlice{
