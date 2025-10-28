@@ -39,6 +39,16 @@ type ParentKid struct {
 	Wallet string `json:"wallet"`
 }
 
+type Chore struct {
+	ChoreID          string `json:"chore_id"`
+	ParentWallet     string `json:"parent_wallet"`
+	ChildWallet      string `json:"child_wallet"`
+	ChoreName        string `json:"chore_name"`
+	ChoreDescription string `json:"chore_description"`
+	BountyAmount     uint64 `json:"bounty_amount"`
+	ChoreStatus      int    `json:"chore_status"`
+}
+
 func Open(ctx context.Context, path string) (*DB, error) {
 	d, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -70,6 +80,15 @@ func (d *DB) Migrate(ctx context.Context) error {
 			parent_id TEXT NOT NULL,
 			wallet TEXT NOT NULL DEFAULT '',
 			FOREIGN KEY(parent_id) REFERENCES parents(id) ON UPDATE CASCADE ON DELETE CASCADE
+		);`,
+		`CREATE TABLE IF NOT EXISTS chores (
+			chore_id TEXT PRIMARY KEY,
+			parent_wallet TEXT NOT NULL,
+			child_wallet TEXT NOT NULL,
+			chore_name TEXT NOT NULL,
+			chore_description TEXT NOT NULL,
+			bounty_amount INTEGER NOT NULL,
+			chore_status INTEGER NOT NULL DEFAULT 0
 		);`,
 	}
 	for _, s := range stmts {
@@ -364,4 +383,70 @@ func removeChildFromParentKidsListTx(ctx context.Context, tx *sql.Tx, parentID, 
 	buf, _ := json.Marshal(out)
 	_, err := tx.ExecContext(ctx, `UPDATE parents SET kids_list=? WHERE id=?`, string(buf), parentID)
 	return err
+}
+
+func (d *DB) CreateChore(ctx context.Context, parentWallet, childWallet, choreName, choreDescription string, bountyAmount uint64) (*Chore, error) {
+	id, err := util.GenerateShortID()
+	if err != nil {
+		return nil, err
+	}
+
+	_, err = d.SQL.ExecContext(ctx, `INSERT INTO chores (chore_id, parent_wallet, child_wallet, chore_name, chore_description, bounty_amount, chore_status) VALUES (?, ?, ?, ?, ?, ?, 0)`,
+		id, parentWallet, childWallet, choreName, choreDescription, bountyAmount)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Chore{
+		ChoreID:          id,
+		ParentWallet:     parentWallet,
+		ChildWallet:      childWallet,
+		ChoreName:        choreName,
+		ChoreDescription: choreDescription,
+		BountyAmount:     bountyAmount,
+		ChoreStatus:      0,
+	}, nil
+}
+
+func (d *DB) UpdateChoreStatus(ctx context.Context, choreID string, newStatus int) (*Chore, error) {
+	result, err := d.SQL.ExecContext(ctx, `UPDATE chores SET chore_status=? WHERE chore_id=?`, newStatus, choreID)
+	if err != nil {
+		return nil, err
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+	if rowsAffected == 0 {
+		return nil, sql.ErrNoRows
+	}
+
+	row := d.SQL.QueryRowContext(ctx, `SELECT chore_id, parent_wallet, child_wallet, chore_name, chore_description, bounty_amount, chore_status FROM chores WHERE chore_id=?`, choreID)
+	var c Chore
+	if err := row.Scan(&c.ChoreID, &c.ParentWallet, &c.ChildWallet, &c.ChoreName, &c.ChoreDescription, &c.BountyAmount, &c.ChoreStatus); err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+func (d *DB) GetChores(ctx context.Context, wallet string) ([]Chore, error) {
+	rows, err := d.SQL.QueryContext(ctx, `SELECT chore_id, parent_wallet, child_wallet, chore_name, chore_description, bounty_amount, chore_status FROM chores WHERE parent_wallet=? OR child_wallet=?`, wallet, wallet)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var chores []Chore
+	for rows.Next() {
+		var c Chore
+		if err := rows.Scan(&c.ChoreID, &c.ParentWallet, &c.ChildWallet, &c.ChoreName, &c.ChoreDescription, &c.BountyAmount, &c.ChoreStatus); err != nil {
+			return nil, err
+		}
+		chores = append(chores, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return chores, nil
 }

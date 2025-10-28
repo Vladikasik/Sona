@@ -33,9 +33,9 @@ Endpoints
 
 - POST /generate_merkletree
   - Body: {"owner_wallet":"Fz..."}
-  - Behavior: Creates merkle tree using server wallet and submits directly to Solana
+  - Behavior: Creates merkle tree using Node.js script with official Metaplex SDK
   - Returns: Tree ID, tree authority PDA, and transaction signature
-  - Note: Requires SERVER_WALLET_PRIVATE_KEY environment variable to be set
+  - Note: Requires SERVER_WALLET_PRIVATE_KEY environment variable and Node.js installed
 
 - POST /mint_nft
   - Body: {"owner_wallet":"Fz...", "name":"Chore #1", "price":"100", "description":"Task", "send_to":"ABC...", "tree_id":"9GgFXzL5H6Yai7A2TNaEdU5cNqAvZM3Hpw3fQcqGGpAx"}

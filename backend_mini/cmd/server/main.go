@@ -47,6 +47,9 @@ func main() {
 	mux.Handle("/mint_nft", middleware.RequireBearer("SonaBetaTestAPi", http.HandlerFunc(api.MintNFT)))
 	mux.Handle("/upd_nft", middleware.RequireBearer("SonaBetaTestAPi", http.HandlerFunc(api.UpdNFT)))
 	mux.Handle("/accept_nft", middleware.RequireBearer("SonaBetaTestAPi", http.HandlerFunc(api.AcceptNFT)))
+	mux.Handle("/create_chore", middleware.RequireBearer("SonaBetaTestAPi", http.HandlerFunc(api.CreateChore)))
+	mux.Handle("/update_chore", middleware.RequireBearer("SonaBetaTestAPi", http.HandlerFunc(api.UpdateChore)))
+	mux.Handle("/get_chores", middleware.RequireBearer("SonaBetaTestAPi", http.HandlerFunc(api.GetChores)))
 
 	// wrap with logging middleware
 	handler := middleware.LogRequests(mux)

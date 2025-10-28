@@ -3,3 +3,4 @@ backend/
 backend_mini/server
 backend_mini/data
 backend_mini/bin/
+backend_mini/node_modules/

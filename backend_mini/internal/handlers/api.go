@@ -1,17 +1,15 @@
 package handlers
 
 import (
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
 
-	"backend_mini/internal/config"
 	"backend_mini/internal/db"
 	"backend_mini/internal/util"
-
-	"github.com/gagliardetto/solana-go"
-	"github.com/gagliardetto/solana-go/rpc"
 )
 
 type API struct {
@@ -64,6 +62,23 @@ type acceptNFTRequest struct {
 	NftAddress    string `json:"nft_address"`
 	SenderWallet  string `json:"sender_wallet"`
 	PaymentAmount string `json:"payment_amount"`
+}
+
+type createChoreRequest struct {
+	ParentWallet     string `json:"parent_wallet"`
+	ChildWallet      string `json:"child_wallet"`
+	ChoreName        string `json:"chore_name"`
+	ChoreDescription string `json:"chore_description"`
+	BountyAmount     string `json:"bounty_amount"`
+}
+
+type updateChoreRequest struct {
+	ChoreID   string `json:"chore_id"`
+	NewStatus int    `json:"new_status"`
+}
+
+type getChoresRequest struct {
+	Wallet string `json:"wallet"`
 }
 
 func (a *API) GetParent(w http.ResponseWriter, r *http.Request) {
@@ -196,37 +211,13 @@ func (a *API) GenerateMerkleTree(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	authorityPubkey, err := solana.PublicKeyFromBase58(req.OwnerWallet)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid owner_wallet")
-		return
-	}
-
-	serverWallet, err := config.GetServerWallet()
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "server wallet not configured")
-		return
-	}
-
-	client := rpc.New("https://api.devnet.solana.com")
-	treePubkey, signature, err := util.CreateAndSubmitMerkleTree(client, serverWallet, authorityPubkey)
+	result, err := util.CreateMerkleTreeViaJS(req.OwnerWallet)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	bubblegumProgram := solana.MustPublicKeyFromBase58(util.BubblegumProgram)
-	treeAuthority := util.DeriveTreeAuthority(treePubkey, bubblegumProgram)
-
-	response := map[string]interface{}{
-		"tree_id":        treePubkey.String(),
-		"tree_authority": treeAuthority.String(),
-		"authority":      authorityPubkey.String(),
-		"signature":      signature,
-		"message":        "Merkle tree created successfully",
-	}
-
-	writeJSON(w, http.StatusOK, response)
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (a *API) MintNFT(w http.ResponseWriter, r *http.Request) {
@@ -298,6 +289,102 @@ func (a *API) AcceptNFT(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, txData)
+}
+
+func (a *API) CreateChore(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	var req createChoreRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if strings.TrimSpace(req.ParentWallet) == "" || strings.TrimSpace(req.ChildWallet) == "" || strings.TrimSpace(req.ChoreName) == "" {
+		writeError(w, http.StatusBadRequest, "parent_wallet, child_wallet, and chore_name are required")
+		return
+	}
+	bountyAmount, err := strconv.ParseUint(req.BountyAmount, 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid bounty_amount")
+		return
+	}
+	ctx := r.Context()
+	chore, err := a.db.CreateChore(ctx, req.ParentWallet, req.ChildWallet, req.ChoreName, req.ChoreDescription, bountyAmount)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, chore)
+}
+
+func (a *API) UpdateChore(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	var req updateChoreRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if strings.TrimSpace(req.ChoreID) == "" {
+		writeError(w, http.StatusBadRequest, "chore_id is required")
+		return
+	}
+	if req.NewStatus < 0 || req.NewStatus > 4 {
+		writeError(w, http.StatusBadRequest, "new_status must be between 0 and 4")
+		return
+	}
+	ctx := r.Context()
+	chore, err := a.db.UpdateChoreStatus(ctx, req.ChoreID, req.NewStatus)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "chore not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	if req.NewStatus == 3 {
+		txData, err := util.BuildEURCTransferTransaction(chore.ParentWallet, chore.ChildWallet, chore.BountyAmount)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"chore":       chore,
+			"transaction": txData,
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, chore)
+}
+
+func (a *API) GetChores(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	var req getChoresRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if strings.TrimSpace(req.Wallet) == "" {
+		writeError(w, http.StatusBadRequest, "wallet is required")
+		return
+	}
+	ctx := r.Context()
+	chores, err := a.db.GetChores(ctx, req.Wallet)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, chores)
 }
 
 func writeError(w http.ResponseWriter, status int, msg string) {

@@ -1,38 +1,49 @@
 # Server Wallet Setup
 
-The backend now uses a server-side wallet to create merkle trees directly on Solana.
+The backend now uses a Node.js script with official Metaplex/Bubblegum SDKs to create merkle trees.
 
 ## Setup Steps
 
-1. **Generate a server wallet** (or use an existing one):
+1. **Install Node.js** (if not already installed):
    ```bash
-   # Install Solana CLI if needed
-   # Then generate a new keypair:
-   solana-keygen new --outfile server-wallet.json
-   
-   # Export private key in base58 format:
-   solana-keygen pubkey server-wallet.json
+   node --version  # Should be >= 20.11.1
    ```
 
-2. **Set environment variable**:
+2. **Install npm dependencies**:
+   ```bash
+   cd backend_mini
+   npm install
+   ```
+
+3. **Generate a server wallet** (or use an existing one):
+   ```bash
+   # Using Solana CLI:
+   solana-keygen new --outfile server-wallet.json
+   
+   # Get the base58 private key:
+   cat server-wallet.json | jq -r '.[0:64]'  # This gives you the seed
+   # OR get it in hex format from the full keypair
+   ```
+
+4. **Set environment variable** (in base58 format):
    ```bash
    export SERVER_WALLET_PRIVATE_KEY="YOUR_PRIVATE_KEY_BASE58_HERE"
    ```
+   
+   The private key can be in:
+   - Base58 format (88 characters) - recommended
+   - Hex format (128 characters)  
+   - Base64 format
 
-3. **Or add to your shell profile** (`~/.zshrc` or `~/.bashrc`):
-   ```bash
-   echo 'export SERVER_WALLET_PRIVATE_KEY="YOUR_PRIVATE_KEY_BASE58_HERE"' >> ~/.zshrc
-   source ~/.zshrc
-   ```
-
-4. **Fund the wallet** on devnet:
+5. **Fund the wallet** on devnet:
    ```bash
    solana airdrop 1 YOUR_SERVER_WALLET_ADDRESS --url devnet
    ```
 
-5. **Run the server**:
+6. **Build and run the server**:
    ```bash
-   ./server
+   go build -o bin/backend_mini ./cmd/server
+   ./bin/backend_mini
    ```
 
 ## Generating Tree

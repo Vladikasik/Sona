@@ -4,7 +4,11 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 
 	"github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/programs/system"
@@ -573,4 +577,35 @@ func CreateAndSubmitMerkleTree(client *rpc.Client, serverWallet *solana.PrivateK
 	}
 
 	return treePubkey, sig.String(), nil
+}
+
+func CreateMerkleTreeViaJS(authorityWallet string) (map[string]interface{}, error) {
+	execPath, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get executable path: %w", err)
+	}
+
+	scriptPath := filepath.Join(filepath.Dir(execPath), "scripts", "create_tree.js")
+	if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
+		return nil, fmt.Errorf("script not found at %s", scriptPath)
+	}
+
+	cmd := exec.Command("node", scriptPath, authorityWallet)
+	cmd.Env = os.Environ()
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("js script failed: %w, output: %s", err, string(output))
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(output, &result); err != nil {
+		return nil, fmt.Errorf("failed to parse script output: %w, output: %s", err, string(output))
+	}
+
+	if errorMsg, ok := result["error"].(string); ok {
+		return nil, fmt.Errorf("script error: %s", errorMsg)
+	}
+
+	return result, nil
 }
