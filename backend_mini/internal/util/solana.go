@@ -543,14 +543,14 @@ func CreateAndSubmitMerkleTree(client *rpc.Client, serverWallet *solana.PrivateK
 		data: data,
 	}
 
-	recent, err := client.GetRecentBlockhash(context.Background(), rpc.CommitmentFinalized)
+	latest, err := client.GetLatestBlockhash(context.Background(), rpc.CommitmentFinalized)
 	if err != nil {
-		return solana.PublicKey{}, "", fmt.Errorf("failed to get recent blockhash: %w", err)
+		return solana.PublicKey{}, "", fmt.Errorf("failed to get latest blockhash: %w", err)
 	}
 
 	tx, err := solana.NewTransaction(
 		[]solana.Instruction{cac, initIx},
-		recent.Value.Blockhash,
+		latest.Value.Blockhash,
 		solana.TransactionPayer(serverWallet.PublicKey()),
 	)
 	if err != nil {
